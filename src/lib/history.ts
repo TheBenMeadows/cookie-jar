@@ -95,24 +95,68 @@ function payerOf(tx: ParsedTransactionWithMeta): string | null {
   return tx.transaction.message.accountKeys[0]?.pubkey.toBase58() ?? null;
 }
 
+/** How many signatures a single `getSignaturesForAddress` call asks for. */
+const PAGE = 100;
+
+/** The point at which a jar stops digging. A busy address can hold far more history than this. */
+export const SCAN_CAP = 1000;
+
+export interface JarHistory {
+  payments: JarPayment[];
+  /** How many signatures were read to find them. */
+  scanned: number;
+  /** True when the scan stopped at the cap rather than at the end of the address's history. */
+  hitCap: boolean;
+}
+
 /**
- * Read up to `limit` recent Cookie Jar payments into `jar`. Transactions that failed on chain are
- * dropped: a jar shows money that arrived, not money that was attempted.
+ * Read Cookie Jar payments into `jar`, paging back through its signatures until `limit` are found or
+ * `SCAN_CAP` signatures have been read.
+ *
+ * Paging matters on an address that does anything besides receive payments: without it a jar with
+ * forty trades on top of a payment shows nothing and looks empty, which is the one wrong answer a
+ * jar can give. Transactions that failed on chain are dropped — a jar shows money that arrived.
  */
 export async function fetchJarHistory(
   connection: Connection,
   jar: PublicKey,
   limit = 40,
-): Promise<JarPayment[]> {
+): Promise<JarHistory> {
   const jarAddress = jar.toBase58();
-  const signatures = await connection.getSignaturesForAddress(jar, { limit });
-  const candidates = signatures.filter(
-    (s) => s.err === null && (s.memo === null || s.memo === undefined || s.memo.includes(MEMO_PREFIX)),
-  );
-  if (candidates.length === 0) return [];
+
+  const candidates: string[] = [];
+  let scanned = 0;
+  let before: string | undefined;
+  let exhausted = false;
+
+  while (scanned < SCAN_CAP && candidates.length < limit) {
+    const page = await connection.getSignaturesForAddress(jar, {
+      limit: Math.min(PAGE, SCAN_CAP - scanned),
+      ...(before ? { before } : {}),
+    });
+    if (page.length === 0) {
+      exhausted = true;
+      break;
+    }
+    scanned += page.length;
+    before = page[page.length - 1]?.signature;
+    for (const entry of page) {
+      if (entry.err !== null) continue;
+      // The RPC summarises a transaction's memos here, so a transaction with no Cookie Jar memo can
+      // be skipped without fetching it. A null summary means "not reported", not "no memo".
+      if (entry.memo !== null && entry.memo !== undefined && !entry.memo.includes(MEMO_PREFIX)) {
+        continue;
+      }
+      candidates.push(entry.signature);
+      if (candidates.length >= limit) break;
+    }
+  }
+
+  const hitCap = !exhausted && scanned >= SCAN_CAP && candidates.length < limit;
+  if (candidates.length === 0) return { payments: [], scanned, hitCap };
 
   const payments: JarPayment[] = [];
-  for (const batch of chunk(candidates.map((s) => s.signature), BATCH)) {
+  for (const batch of chunk(candidates, BATCH)) {
     const transactions = await connection.getParsedTransactions(batch, {
       maxSupportedTransactionVersion: 0,
     });
@@ -156,7 +200,7 @@ export async function fetchJarHistory(
   }
 
   payments.sort((a, b) => (b.blockTime ?? 0) - (a.blockTime ?? 0));
-  return payments;
+  return { payments, scanned, hitCap };
 }
 
 export interface JarTotal {

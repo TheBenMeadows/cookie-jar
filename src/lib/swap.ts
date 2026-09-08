@@ -1,4 +1,8 @@
-import { CANDYSHOP_API, COOKIEBOX_AGG_API, DEFAULT_SLIPPAGE_BPS } from "./config";
+import { Buffer } from "buffer";
+import { PublicKey, type Connection, type VersionedTransaction } from "@solana/web3.js";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+
+import { CANDYSHOP_API, COOKIEBOX_AGG_API, COOK_MINT, DEFAULT_SLIPPAGE_BPS } from "./config";
 import { fetchJson, HttpError } from "./http";
 
 /**
@@ -183,8 +187,11 @@ export async function bestSwapQuote(args: {
     .map((r) => r.value)
     .filter((q): q is SwapQuote => q !== null);
 
-  if (quotes.length === 0) return null;
-  return quotes.reduce((best, q) => (BigInt(q.outAmount) > BigInt(best.outAmount) ? q : best));
+  // A router answering with a decimal or an empty string is dropped rather than compared: BigInt
+  // throws on anything that is not a whole number, and one bad quote must not lose the other.
+  const usable = quotes.filter((q) => /^\d+$/.test(q.outAmount) && /^\d+$/.test(q.minOutAmount));
+  if (usable.length === 0) return null;
+  return usable.reduce((best, q) => (BigInt(q.outAmount) > BigInt(best.outAmount) ? q : best));
 }
 
 // --- Executing a swap -----------------------------------------------------------------------------
@@ -246,4 +253,163 @@ export async function buildSwapTransaction(quote: SwapQuote, owner: string): Pro
     rawAmount: quote.inAmount,
     owner,
   });
+}
+
+// --- Checking a swap before it is signed ----------------------------------------------------------
+
+/**
+ * The aggregator builds the transaction; this app has to decide whether to put it in front of a
+ * wallet. A router is a third party, and "it simulated" is not the same as "it does what the quote
+ * said" — a transaction can succeed on chain and still move the payer's tokens somewhere else.
+ *
+ * Three things are checked, in the order that a failure is cheapest to explain:
+ *   1. the payer is the fee payer and the only required signer, so nothing else is being co-signed;
+ *   2. it simulates clean;
+ *   3. the payer's own balances move the way the quote promised — at least the minimum out arrives,
+ *      and nothing except the token being sold goes down.
+ */
+
+/** Base units sit at offset 64 of an SPL token account, in Token and in Token-2022 alike. */
+const TOKEN_ACCOUNT_AMOUNT_OFFSET = 64;
+
+/**
+ * Room for the network fee and for rent on a token account the swap may open, both of which come out
+ * of a native-token balance and are not part of what the quote promised. 0.01 COOK covers a handful
+ * of signatures plus one account's rent.
+ */
+const NATIVE_OVERHEAD_ALLOWANCE = 10_000_000n;
+
+export interface SwapVerification {
+  ok: boolean;
+  /** Why the transaction was refused. Null when it passed. */
+  reason: string | null;
+  /** What the simulation says the payer actually receives, in base units. */
+  expectedOutRaw: bigint | null;
+}
+
+function readTokenAmount(data: Uint8Array): bigint | null {
+  if (data.length < TOKEN_ACCOUNT_AMOUNT_OFFSET + 8) return null;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  return view.getBigUint64(TOKEN_ACCOUNT_AMOUNT_OFFSET, true);
+}
+
+export async function verifySwapTransaction(args: {
+  connection: Connection;
+  transaction: VersionedTransaction;
+  owner: PublicKey;
+  quote: SwapQuote;
+}): Promise<SwapVerification> {
+  const { connection, transaction, owner, quote } = args;
+  const message = transaction.message;
+
+  const feePayer = message.staticAccountKeys[0];
+  if (!feePayer || !feePayer.equals(owner)) {
+    return {
+      ok: false,
+      reason: `the router built a transaction paid for by ${feePayer?.toBase58() ?? "nobody"} rather than by this wallet`,
+      expectedOutRaw: null,
+    };
+  }
+  if (message.header.numRequiredSignatures !== 1) {
+    return {
+      ok: false,
+      reason: `this transaction needs ${message.header.numRequiredSignatures} signatures; a swap from this wallet needs one`,
+      expectedOutRaw: null,
+    };
+  }
+
+  // Every token account this wallet owns, so a decrease anywhere is visible rather than only in the
+  // two accounts the route names.
+  const owned = await Promise.all(
+    [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) =>
+      connection.getTokenAccountsByOwner(owner, { programId }).catch(() => null),
+    ),
+  );
+
+  interface Watched {
+    address: PublicKey;
+    mint: string;
+    before: bigint;
+  }
+  const watched: Watched[] = [];
+  for (const response of owned) {
+    for (const { pubkey, account } of response?.value ?? []) {
+      const data = new Uint8Array(account.data);
+      const amount = readTokenAmount(data);
+      if (amount === null) continue;
+      const mint = new PublicKey(data.subarray(0, 32)).toBase58();
+      watched.push({ address: pubkey, mint, before: amount });
+    }
+  }
+
+  const nativeOut = quote.outputMint === COOK_MINT;
+  const lamportsBefore = BigInt(await connection.getBalance(owner));
+
+  const addresses = [...watched.map((w) => w.address.toBase58()), owner.toBase58()].slice(0, 60);
+  const simulation = await connection.simulateTransaction(transaction, {
+    replaceRecentBlockhash: true,
+    sigVerify: false,
+    accounts: { encoding: "base64", addresses },
+  });
+
+  if (simulation.value.err) {
+    return {
+      ok: false,
+      reason: `the swap did not simulate: ${simulation.value.logs?.slice(-2).join(" | ") ?? JSON.stringify(simulation.value.err)}`,
+      expectedOutRaw: null,
+    };
+  }
+
+  const post = simulation.value.accounts ?? [];
+  let outDelta: bigint | null = null;
+
+  for (let i = 0; i < watched.length && i < addresses.length; i += 1) {
+    const entry = watched[i];
+    const account = post[i];
+    if (!entry) continue;
+    // A null slot means the simulation did not return that account; treat it as unchanged rather
+    // than as a decrease, because an absent reading is not evidence of a loss.
+    if (!account) continue;
+    const raw = Array.isArray(account.data) ? account.data[0] : null;
+    if (typeof raw !== "string") continue;
+    const after = readTokenAmount(new Uint8Array(Buffer.from(raw, "base64")));
+    if (after === null) continue;
+
+    const delta = after - entry.before;
+    if (entry.mint === quote.outputMint) {
+      outDelta = (outDelta ?? 0n) + (delta > 0n ? delta : 0n);
+    } else if (entry.mint !== quote.inputMint && delta < 0n) {
+      return {
+        ok: false,
+        reason: `this transaction also takes ${-delta} base units of ${entry.mint} out of this wallet, which the quote did not mention`,
+        expectedOutRaw: null,
+      };
+    }
+  }
+
+  if (nativeOut) {
+    const ownerAccount = post[addresses.length - 1];
+    if (ownerAccount) {
+      const after = BigInt(ownerAccount.lamports);
+      outDelta = after - lamportsBefore + NATIVE_OVERHEAD_ALLOWANCE;
+    }
+  }
+
+  const minOut = BigInt(quote.minOutAmount);
+  if (outDelta === null) {
+    return {
+      ok: false,
+      reason: "the simulation did not show this wallet receiving the token it is swapping into",
+      expectedOutRaw: null,
+    };
+  }
+  if (outDelta < minOut) {
+    return {
+      ok: false,
+      reason: `the quote promised at least ${minOut} base units out; the simulation delivers ${outDelta}`,
+      expectedOutRaw: outDelta,
+    };
+  }
+
+  return { ok: true, reason: null, expectedOutRaw: outDelta };
 }

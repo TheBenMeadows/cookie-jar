@@ -66,8 +66,8 @@ The dev server prints a local URL. Open it, connect a wallet, and make a link.
 ```
 npm run build      # typecheck, then a static bundle in dist/
 npm run preview    # serve dist/ locally
-npm test           # 37 unit and render tests, no network
-npm run live       # 16 checks against the live chain, no key, no funds
+npm test           # 51 unit and render tests, no network
+npm run live       # 18 checks against the live chain, no key, no funds
 npm run lint
 ```
 
@@ -101,7 +101,7 @@ Any other static host works the same way. Upload `dist/`.
 
 ## The live checks
 
-`npm run live` runs 16 checks against Cookie Chain and the ecosystem APIs. It signs nothing and sends nothing, so it runs without a key and without funds. It covers the link round-trip, `.cook` resolution for a registered and an unregistered name, the dollar quote, the token registry, a COOK transfer, an SPL transfer, both aggregators, a built swap transaction, and the jar history read.
+`npm run live` runs 18 checks against Cookie Chain and the ecosystem APIs. It signs nothing and sends nothing, so it runs without a key and without funds. It covers the link round-trip, `.cook` resolution for a registered and an unregistered name, the dollar quote, the token registry, a COOK transfer, an SPL transfer, both aggregators, a built swap transaction, and the jar history read.
 
 The transfer checks run twice over. Once as a real holder with signature verification off, which proves the transaction is valid end to end. Once as a freshly generated keypair, which must fail with `AccountNotFound` and nothing else. An address that has never held COOK has no account on chain, so that error is the whole of what is wrong, and it proves the rest of the transaction is well formed.
 
@@ -119,9 +119,13 @@ Step 5 is the one that matters. It proves the history is rebuilt from chain data
 
 ## Known limits
 
-A jar reads the recipient's recent signatures, so a very busy address shows only its recent Cookie Jar payments. Raise the limit in `fetchJarHistory` or page the signatures if that matters.
+A jar sees only as far back as its RPC retains. `getSignaturesForAddress` can answer only for blocks the node still holds, and the public Cookie Chain endpoint keeps a rolling window: measured on 2026-09-08, `getFirstAvailableBlock` was 21,802,517 against slot 23,978,778, which is about 2.2 million slots, or roughly ten days. Payments older than the window are on chain but not in the index, and no client can list them from that endpoint. `npm run live` prints the current figure. An archival RPC set through `VITE_COOKIE_RPC_URL` sees further.
+
+Within the window, a jar pages back through signatures until it has 50 Cookie Jar payments or has read 1,000 signatures, and says so in the page when it stops at the cap.
 
 A transfer to a jar's address without a Cookie Jar memo is left out. A jar lists Cookie Jar payments. Read the address on Cookiescan for a full account statement.
+
+A jar row records what the chain recorded, and nothing more. Anyone can send a jar a small amount with a memo that starts with `cookiejar:1` and a note of their choosing, and it appears in the history like any other payment. Every row links to its transaction on Cookiescan. Check the amount and the sender there before treating a row as a settled invoice.
 
 The swap step seeds its input amount from the two Cookiescan prices plus 3% headroom, because both aggregators quote exact-in rather than exact-out. The quote below the field is what the router actually offers, and the payer can change the number and re-quote.
 

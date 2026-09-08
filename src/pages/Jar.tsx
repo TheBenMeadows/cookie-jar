@@ -3,7 +3,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { getConnection } from "../lib/chain";
 import { resolveRecipient } from "../lib/domains";
-import { fetchJarHistory, totalsByToken, type JarPayment, type JarTotal } from "../lib/history";
+import {
+  fetchJarHistory,
+  SCAN_CAP,
+  totalsByToken,
+  type JarPayment,
+  type JarTotal,
+} from "../lib/history";
 import { fetchToken } from "../lib/tokens";
 import { explorerAddressUrl, explorerTxUrl, COOK_MINT, COOK_SYMBOL } from "../lib/config";
 import { formatTimestamp, groupDigits, rawToUi, shortAddress } from "../lib/format";
@@ -24,6 +30,7 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
   const connection = useMemo(() => getConnection(), []);
   const [resolved, setResolved] = useState<ResolvedRecipient | null>(null);
   const [payments, setPayments] = useState<JarPayment[] | null>(null);
+  const [hitCap, setHitCap] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadCount, setReloadCount] = useState(0);
@@ -51,7 +58,8 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
 
       const history = await fetchJarHistory(connection, res.address, 50);
       if (!live) return;
-      setPayments(history);
+      setPayments(history.payments);
+      setHitCap(history.hitCap);
       setLoading(false);
     })().catch((e: unknown) => {
       if (live) {
@@ -198,6 +206,9 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
           <p className="small">
             {totalPaymentsCount} {totalPaymentsCount === 1 ? "payment" : "payments"} across{" "}
             {totalTokensCount} {totalTokensCount === 1 ? "token" : "tokens"}.
+            {hitCap
+              ? ` Only the most recent ${SCAN_CAP} transactions on this address were read, so older payments are not listed.`
+              : ""}
           </p>
 
           <hr className="perf" />

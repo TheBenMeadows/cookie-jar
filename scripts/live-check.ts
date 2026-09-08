@@ -262,6 +262,27 @@ async function main(): Promise<void> {
     return `${rawToUi(rawAmount, holder.decimals)} tokens from ${holder.owner.toBase58()} over ${program}; recipient account created in the same transaction: ${built.createsRecipientAccount}`;
   });
 
+  await check("a link that lies about a token's decimals is refused", async () => {
+    const mint = new PublicKey(TRASHCOIN_MINT);
+    const holder = await findTokenHolder(mint);
+    let message = "";
+    try {
+      await buildPayment({
+        connection,
+        payer: holder.owner,
+        recipient: SINK,
+        rawAmount: 1n,
+        mint: TRASHCOIN_MINT,
+        decimals: holder.decimals === 6 ? 9 : 6,
+        memo: buildMemo({ to: SINK.toBase58(), note: "live check" }),
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    assert(/decimals/.test(message), `a wrong decimals figure was accepted: ${message || "no error"}`);
+    return `the chain's ${holder.decimals} decimals for TRASHCOIN beat the link's claim: ${message}`;
+  });
+
   await check("a payment to the connected wallet's own jar is refused", async () => {
     const payer = Keypair.generate().publicKey;
     let threw = false;
@@ -330,13 +351,28 @@ async function main(): Promise<void> {
 
   await check("jar history reads from chain", async () => {
     const jar = await resolveRecipient(connection, KNOWN_NAME);
-    const payments = await fetchJarHistory(connection, jar.address, 20);
-    assert(Array.isArray(payments), "history did not come back as a list");
-    for (const payment of payments) {
+    const history = await fetchJarHistory(connection, jar.address, 20);
+    assert(Array.isArray(history.payments), "history did not come back as a list");
+    assert(history.scanned > 0, "the scan read no signatures at all");
+    for (const payment of history.payments) {
       assert(payment.rawAmount > 0n, "a history row recorded a non-positive amount");
       assert(payment.signature.length > 0, "a history row has no signature");
     }
-    return `${KNOWN_NAME} (${jar.address.toBase58()}): ${payments.length} Cookie Jar payments among its recent signatures`;
+    return `${KNOWN_NAME} (${jar.address.toBase58()}): ${history.payments.length} Cookie Jar payments in ${history.scanned} signatures scanned (cap hit: ${history.hitCap})`;
+  });
+
+  await check("how far back a jar can see on this RPC", async () => {
+    // `getSignaturesForAddress` can only answer for blocks the node still holds. This is not a
+    // failure — it is the number that decides how much history a jar shows, so it is measured rather
+    // than assumed, and the README quotes it.
+    const [slot, firstBlock] = await Promise.all([
+      connection.getSlot(),
+      connection.getFirstAvailableBlock(),
+    ]);
+    const slots = slot - firstBlock;
+    const days = (slots * 0.4) / 86_400;
+    assert(slots > 0, "the node reports no retained blocks at all");
+    return `slot ${slot}, first available block ${firstBlock}: ${slots.toLocaleString("en-US")} slots retained, about ${days.toFixed(1)} days at 400 ms per slot`;
   });
 
   await check("bridge is reachable for payers with no COOK", async () => {

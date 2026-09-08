@@ -6,7 +6,12 @@ import { getConnection, waitForSignature } from "../lib/chain";
 import { COOK_MINT, explorerTxUrl } from "../lib/config";
 import { fetchNativeBalance, fetchTokenHoldings, type Holding } from "../lib/balances";
 import { groupDigits, rawToUi, shortAddress, uiToRaw } from "../lib/format";
-import { bestSwapQuote, buildSwapTransaction, type SwapQuote } from "../lib/swap";
+import {
+  bestSwapQuote,
+  buildSwapTransaction,
+  verifySwapTransaction,
+  type SwapQuote,
+} from "../lib/swap";
 import { fetchToken } from "../lib/tokens";
 
 /**
@@ -30,6 +35,14 @@ interface Candidate extends Holding {
   priceUsd: number | null;
 }
 
+type Phase = "idle" | "preparing" | "confirm" | "signing" | "landing" | "done";
+
+interface Prepared {
+  transaction: VersionedTransaction;
+  /** What the simulation showed arriving, not what the router quoted. */
+  expectedOutRaw: bigint;
+}
+
 export function SwapPanel(props: Props): JSX.Element {
   const { signTransaction } = useWallet();
   const connection = useMemo(() => getConnection(), []);
@@ -39,7 +52,8 @@ export function SwapPanel(props: Props): JSX.Element {
   const [inputAmount, setInputAmount] = useState("");
   const [quote, setQuote] = useState<SwapQuote | null>(null);
   const [quoting, setQuoting] = useState(false);
-  const [swapping, setSwapping] = useState(false);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [signature, setSignature] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -107,6 +121,8 @@ export function SwapPanel(props: Props): JSX.Element {
       });
       if (!result) throw new Error("neither aggregator found a route between these two tokens");
       setQuote(result);
+      setPrepared(null);
+      setPhase("idle");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -114,35 +130,54 @@ export function SwapPanel(props: Props): JSX.Element {
     }
   }, [sourceHolding, inputAmount, props.targetMint]);
 
-  const executeSwap = useCallback(async () => {
-    if (!quote || !signTransaction) return;
+  /**
+   * Build the swap and check it before a wallet ever sees it. Nothing is signed here: the payer gets
+   * the figure the simulation actually delivers, and confirms against that rather than against the
+   * router's own quote.
+   */
+  const prepareSwap = useCallback(async () => {
+    if (!quote) return;
     setError(null);
-    setSwapping(true);
+    setPhase("preparing");
     try {
       const built = await buildSwapTransaction(quote, props.owner.toBase58());
       const transaction = VersionedTransaction.deserialize(
         Uint8Array.from(atob(built.transactionBase64), (c) => c.charCodeAt(0)),
       );
-      const simulation = await connection.simulateTransaction(transaction, {
-        replaceRecentBlockhash: true,
-        sigVerify: false,
+      const check = await verifySwapTransaction({
+        connection,
+        transaction,
+        owner: props.owner,
+        quote,
       });
-      if (simulation.value.err) {
-        throw new Error(
-          `the swap did not simulate: ${simulation.value.logs?.slice(-2).join(" | ") ?? JSON.stringify(simulation.value.err)}`,
-        );
-      }
-      const signed = await signTransaction(transaction);
+      if (!check.ok) throw new Error(check.reason ?? "this swap did not pass its checks");
+      setPrepared({ transaction, expectedOutRaw: check.expectedOutRaw ?? 0n });
+      setPhase("confirm");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+      setPhase("idle");
+    }
+  }, [quote, props.owner, connection]);
+
+  const signAndSend = useCallback(async () => {
+    if (!prepared || !signTransaction) return;
+    setError(null);
+    setPhase("signing");
+    try {
+      const signed = await signTransaction(prepared.transaction);
       const sent = await connection.sendRawTransaction(signed.serialize());
-      await waitForSignature(connection, sent);
       setSignature(sent);
+      // The payment below this panel stays blocked until the swap has actually settled: a balance
+      // read taken before then still shows the old figure.
+      setPhase("landing");
+      await waitForSignature(connection, sent);
+      setPhase("done");
       props.onSwapped();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSwapping(false);
+      setPhase("confirm");
     }
-  }, [quote, signTransaction, connection, props]);
+  }, [prepared, signTransaction, connection, props]);
 
   return (
     <section>
@@ -205,9 +240,28 @@ export function SwapPanel(props: Props): JSX.Element {
             <button className="quiet" disabled={!sourceHolding || quoting} onClick={() => void requestQuote()}>
               {quoting ? "Quoting…" : "Get a quote"}
             </button>
-            {quote && (
-              <button className="quiet" disabled={swapping || !signTransaction} onClick={() => void executeSwap()}>
-                {swapping ? "Waiting for your wallet…" : "Swap"}
+            {quote && phase !== "confirm" && (
+              <button
+                className="quiet"
+                disabled={phase !== "idle" || !signTransaction}
+                onClick={() => void prepareSwap()}
+              >
+                {phase === "preparing"
+                  ? "Checking the swap…"
+                  : phase === "landing"
+                    ? "Swap landing…"
+                    : phase === "signing"
+                      ? "Waiting for your wallet…"
+                      : phase === "done"
+                        ? "Swapped"
+                        : "Check this swap"}
+              </button>
+            )}
+            {phase === "confirm" && prepared && (
+              <button className="quiet" disabled={!signTransaction} onClick={() => void signAndSend()}>
+                Confirm: receive{" "}
+                {groupDigits(rawToUi(prepared.expectedOutRaw, props.targetDecimals))}{" "}
+                {props.targetSymbol}
               </button>
             )}
           </div>

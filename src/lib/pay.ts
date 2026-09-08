@@ -13,6 +13,7 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
   createTransferCheckedInstruction,
   getAssociatedTokenAddressSync,
+  unpackMint,
 } from "@solana/spl-token";
 
 import { COOK_MINT, MEMO_PROGRAM_ID } from "./config";
@@ -62,16 +63,72 @@ export interface BuiltPayment {
   lastValidBlockHeight: number;
 }
 
-/** Which token program owns this mint — Token or Token-2022. Both exist on Cookie Chain. */
-export async function fetchTokenProgramId(
+export interface MintFacts {
+  programId: PublicKey;
+  decimals: number;
+}
+
+/**
+ * The mint, read from the chain: which token program owns it, and how many decimals it has.
+ *
+ * The decimals matter beyond display. A payment link carries them so the Pay page can price a
+ * request before any RPC call, but a link is attacker-controlled text: a link claiming 6 decimals
+ * for a 9-decimal token turns "1.5" into 1,500 times less than the payer reads. `TransferChecked`
+ * would catch it on chain, but only after the payer had signed. This is read first and the two are
+ * compared before anything is built.
+ */
+export async function fetchMintFacts(
   connection: Connection,
   mint: PublicKey,
-): Promise<PublicKey> {
+): Promise<MintFacts> {
   const info = await connection.getAccountInfo(mint);
   if (!info) throw new PaymentError(`no token exists at ${mint.toBase58()} on Cookie Chain`);
-  if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) return TOKEN_2022_PROGRAM_ID;
-  if (info.owner.equals(TOKEN_PROGRAM_ID)) return TOKEN_PROGRAM_ID;
-  throw new PaymentError(`${mint.toBase58()} is not an SPL token mint`);
+  let programId: PublicKey;
+  if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) programId = TOKEN_2022_PROGRAM_ID;
+  else if (info.owner.equals(TOKEN_PROGRAM_ID)) programId = TOKEN_PROGRAM_ID;
+  else throw new PaymentError(`${mint.toBase58()} is not an SPL token mint`);
+  return { programId, decimals: unpackMint(mint, info, programId).decimals };
+}
+
+/**
+ * Which of the payer's accounts the transfer draws from.
+ *
+ * A wallet can hold one mint across several accounts, and only the associated one is derivable. A
+ * balance summed across all of them would show a payer enough to cover an invoice that the transfer
+ * then cannot draw, so the account is chosen here and the amount is checked against that account
+ * alone.
+ */
+export async function chooseSourceAccount(
+  connection: Connection,
+  payer: PublicKey,
+  mint: PublicKey,
+  programId: PublicKey,
+  rawAmount: bigint,
+): Promise<PublicKey> {
+  const ata = getAssociatedTokenAddressSync(mint, payer, true, programId);
+  const { value } = await connection.getParsedTokenAccountsByOwner(payer, { mint, programId });
+
+  const accounts = value
+    .map(({ pubkey, account }) => {
+      const amount: unknown = account.data.parsed?.info?.tokenAmount?.amount;
+      return { pubkey, raw: typeof amount === "string" ? BigInt(amount) : 0n };
+    })
+    .sort((a, b) => (b.raw > a.raw ? 1 : b.raw < a.raw ? -1 : 0));
+
+  const ataHolding = accounts.find((a) => a.pubkey.equals(ata));
+  if (ataHolding && ataHolding.raw >= rawAmount) return ata;
+
+  const largest = accounts[0];
+  if (largest && largest.raw >= rawAmount) return largest.pubkey;
+
+  const total = accounts.reduce((sum, a) => sum + a.raw, 0n);
+  if (accounts.length > 1 && total >= rawAmount) {
+    throw new PaymentError(
+      `this wallet holds enough of this token, but split across ${accounts.length} accounts and no ` +
+        "single one covers the payment — consolidate them first, because one transfer draws from one account",
+    );
+  }
+  throw new PaymentError("this wallet does not hold enough of this token to cover the payment");
 }
 
 export async function buildPayment(args: BuildPaymentArgs): Promise<BuiltPayment> {
@@ -102,8 +159,15 @@ export async function buildPayment(args: BuildPaymentArgs): Promise<BuiltPayment
     );
   } else {
     const mint = new PublicKey(args.mint as string);
-    tokenProgramId = await fetchTokenProgramId(connection, mint);
-    const source = getAssociatedTokenAddressSync(mint, payer, true, tokenProgramId);
+    const facts = await fetchMintFacts(connection, mint);
+    tokenProgramId = facts.programId;
+    if (facts.decimals !== decimals) {
+      throw new PaymentError(
+        `this link says ${mint.toBase58()} has ${decimals} decimals; the chain says ${facts.decimals}. ` +
+          "Refusing to build a transfer against a figure the link got wrong.",
+      );
+    }
+    const source = await chooseSourceAccount(connection, payer, mint, tokenProgramId, rawAmount);
     const destination = getAssociatedTokenAddressSync(mint, recipient, true, tokenProgramId);
 
     const destinationInfo = await connection.getAccountInfo(destination);
@@ -155,8 +219,11 @@ export interface SimulationOutcome {
   err: unknown;
   logs: string[];
   /**
-   * True when the only thing wrong is that the payer cannot cover the transfer. Everything else
-   * about the transaction — accounts, programs, instruction data — passed.
+   * True when the only failure simulation reported is that the payer cannot cover the transfer.
+   *
+   * Simulation runs with signature verification off, so this says the transaction is well formed and
+   * every program it calls accepted it, with funds the one thing missing that simulation could see.
+   * It says nothing about whether a wallet will sign it or whether the payer holds the keys.
    */
   insufficientFunds: boolean;
   /**
@@ -177,9 +244,10 @@ const INSUFFICIENT_PATTERNS = [
 ];
 
 /**
- * Simulate without signing. The interesting case is an unfunded payer: an "insufficient funds"
- * failure means every other part of the transaction is valid, which is exactly what the offline test
- * suite asserts.
+ * Simulate without signing, and without verifying signatures. A clean result means the transaction
+ * is well formed and every program it calls accepted it against current chain state. It does not
+ * mean the payer can sign it, and it is not a guarantee about the transaction that finally lands:
+ * state can move between here and the wallet prompt.
  */
 export async function simulatePayment(
   connection: Connection,

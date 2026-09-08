@@ -14,7 +14,7 @@ import {
   explorerAddressUrl,
   explorerTxUrl,
 } from "../lib/config";
-import { fetchBalanceOf } from "../lib/balances";
+import { fetchBalanceOf, type Holding } from "../lib/balances";
 import { resolveRecipient } from "../lib/domains";
 import {
   displayAmount,
@@ -57,7 +57,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [priceUsd, setPriceUsd] = useState<number | null>(null);
   const [enteredAmount, setEnteredAmount] = useState("");
-  const [balanceRaw, setBalanceRaw] = useState<bigint | null>(null);
+  const [holding, setHolding] = useState<Holding | null>(null);
   const [stage, setStage] = useState<Stage>("reading");
   const [signature, setSignature] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -102,16 +102,16 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
 
   useEffect(() => {
     if (!publicKey || !request) {
-      setBalanceRaw(null);
+      setHolding(null);
       return;
     }
     let live = true;
     fetchBalanceOf(connection, publicKey, request.mint)
-      .then((holding) => {
-        if (live) setBalanceRaw(holding.raw);
+      .then((result) => {
+        if (live) setHolding(result);
       })
       .catch(() => {
-        if (live) setBalanceRaw(null);
+        if (live) setHolding(null);
       });
     return () => {
       live = false;
@@ -132,9 +132,9 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   }, [request, decimals, priceUsd, enteredAmount]);
 
   const shortfall = useMemo(() => {
-    if (rawAmount === null || balanceRaw === null) return null;
-    return balanceRaw < rawAmount ? rawAmount - balanceRaw : null;
-  }, [rawAmount, balanceRaw]);
+    if (rawAmount === null || holding === null) return null;
+    return holding.spendable < rawAmount ? rawAmount - holding.spendable : null;
+  }, [rawAmount, holding]);
 
   /**
    * Why this payment cannot go, in the words the button wears. A recipient that failed to resolve
@@ -155,10 +155,21 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
     setWarning(null);
     setStage("sending");
     try {
+      // The address was resolved when the page opened. A `.cook` name can be transferred or listed
+      // for sale in between, and this page can sit open for a long time, so the recipient is read
+      // again here and the payment is refused rather than sent somewhere else.
+      const current = await resolveRecipient(connection, request.to);
+      if (!current.address.equals(resolved.address)) {
+        setResolved(current);
+        throw new Error(
+          "the recipient changed while this page was open — reload and check the address before paying",
+        );
+      }
+
       const built = await buildPayment({
         connection,
         payer: publicKey,
-        recipient: resolved.address,
+        recipient: current.address,
         rawAmount,
         mint: request.mint,
         decimals,
@@ -168,12 +179,17 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
       const outcome = await simulatePayment(connection, built.transaction);
       if (!outcome.ok) throw new Error(outcome.message ?? "the payment did not simulate");
 
+      // A blockhash expires in about a minute and the wallet prompt can sit longer than that, so the
+      // one the payer signs is fetched after simulation rather than before it.
+      const fresh = await connection.getLatestBlockhash("confirmed");
+      built.transaction.recentBlockhash = fresh.blockhash;
+
       const sent = await sendTransaction(built.transaction, connection);
       const confirmation = await connection.confirmTransaction(
         {
           signature: sent,
-          blockhash: built.blockhash,
-          lastValidBlockHeight: built.lastValidBlockHeight,
+          blockhash: fresh.blockhash,
+          lastValidBlockHeight: fresh.lastValidBlockHeight,
         },
         "confirmed",
       );
@@ -327,11 +343,14 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
             {FEE_PER_SIGNATURE_COOK} {COOK_SYMBOL}
           </dd>
         </div>
-        {balanceRaw !== null && (
+        {holding !== null && (
           <div className="row">
-            <dt>You hold</dt>
+            <dt>You can send</dt>
             <dd className="tabular">
-              {displayAmount(balanceRaw, decimals)} {symbol}
+              {displayAmount(holding.spendable, decimals)} {symbol}
+              {holding.accountCount > 1 && holding.spendable < holding.raw
+                ? ` of ${displayAmount(holding.raw, decimals)} across ${holding.accountCount} accounts`
+                : ""}
             </dd>
           </div>
         )}
@@ -374,7 +393,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
         />
       )}
 
-      {balanceRaw === 0n && mint === COOK_MINT && (
+      {holding?.raw === 0n && mint === COOK_MINT && (
         <p className="small">
           This wallet holds no {COOK_SYMBOL}. Bring some across from Solana at the Cookie Chain
           bridge:
