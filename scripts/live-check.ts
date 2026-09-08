@@ -1,0 +1,310 @@
+/**
+ * Live checks against Cookie Chain. Everything here reads the real chain and the real ecosystem
+ * APIs; nothing is signed and nothing is sent, so the suite is safe to run from any machine with no
+ * key and no funds.
+ *
+ * Two kinds of transaction check run:
+ *   - as a REAL holder, with signature verification off, which proves the whole transaction is
+ *     valid end to end (a clean simulation, no error);
+ *   - as a FRESH UNFUNDED keypair, which must fail on funds and nothing else — that is the proof
+ *     the transaction is otherwise well formed even where no funded wallet is available.
+ *
+ * Run: `npm run live`
+ */
+import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+
+import { getConnection } from "../src/lib/chain";
+import { BRIDGE_URL, COOK_DECIMALS, COOK_MINT, COOK_SYMBOL, RPC_URL } from "../src/lib/config";
+import { fetchDomain, resolveRecipient } from "../src/lib/domains";
+import { groupDigits, rawToUi, uiToRaw } from "../src/lib/format";
+import { fetchJarHistory } from "../src/lib/history";
+import { buildPayment, simulatePayment } from "../src/lib/pay";
+import { usdToRaw } from "../src/lib/quote";
+import { buildMemo, decodeRequest, encodeRequest, parseMemo, type PaymentRequest } from "../src/lib/request";
+import { bestSwapQuote } from "../src/lib/swap";
+import { fetchCookPriceUsd, fetchToken, searchTokens } from "../src/lib/tokens";
+
+const connection = getConnection();
+
+let passed = 0;
+let failed = 0;
+
+function report(name: string, ok: boolean, detail: string): void {
+  if (ok) passed += 1;
+  else failed += 1;
+  console.log(`${ok ? "PASS" : "FAIL"}  ${name}\n      ${detail}`);
+}
+
+async function check(name: string, fn: () => Promise<string>): Promise<void> {
+  try {
+    report(name, true, await fn());
+  } catch (error) {
+    report(name, false, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function assert(condition: boolean, message: string): void {
+  if (!condition) throw new Error(message);
+}
+
+/** A `.cook` name that is registered on chain today, discovered rather than assumed. */
+const KNOWN_NAME = "cookie.cook";
+
+/** A token with real Cookie Chain liquidity, used for the SPL and swap checks. */
+const TRASHCOIN_MINT = "GNFqCqaU9R2jas4iaKEFZM5hiX5AHxBL7rPHTCpX5T6z";
+
+/** Somewhere for the test payments to point. Never receives anything — nothing is ever sent. */
+const SINK = Keypair.generate().publicKey;
+
+async function findFundedWallet(minLamports: bigint): Promise<PublicKey> {
+  // Wallets that registered `.cook` names, so they held at least the registration price at some
+  // point. Checked live; the first one still holding enough is used.
+  const candidates = [
+    "4GGk4vTDd1FCA4NHd62xcwcab86KAm6dFtG7zrGKSGUx",
+    "AuCPPPDywCr9tq3LrYC4cGM5mpfYpZy1ZKYhshZvPtFj",
+    "AmZDfCaqwzqnCiiu3Go91BJGctrKsUBQS4ydR3SAao7i",
+  ];
+  for (const candidate of candidates) {
+    const key = new PublicKey(candidate);
+    const balance = await connection.getBalance(key);
+    if (BigInt(balance) >= minLamports) return key;
+  }
+  throw new Error("no candidate wallet on Cookie Chain still holds enough COOK to simulate against");
+}
+
+/** The largest holder of `mint` whose token account belongs to an ordinary wallet, not a program. */
+async function findTokenHolder(
+  mint: PublicKey,
+): Promise<{ owner: PublicKey; raw: bigint; decimals: number }> {
+  const largest = await connection.getTokenLargestAccounts(mint);
+  for (const account of largest.value.slice(0, 10)) {
+    const info = await connection.getParsedAccountInfo(account.address);
+    const data = info.value?.data;
+    if (!data || !("parsed" in data)) continue;
+    const owner = data.parsed?.info?.owner;
+    if (typeof owner !== "string") continue;
+    const ownerInfo = await connection.getAccountInfo(new PublicKey(owner));
+    if (!ownerInfo || !ownerInfo.owner.equals(SystemProgram.programId)) continue;
+    return {
+      owner: new PublicKey(owner),
+      raw: BigInt(account.amount),
+      decimals: account.decimals,
+    };
+  }
+  throw new Error(`no wallet-owned holder of ${mint.toBase58()} found among the largest accounts`);
+}
+
+async function main(): Promise<void> {
+  console.log(`Cookie Jar live checks — RPC ${RPC_URL}\n`);
+
+  await check("rpc reachable", async () => {
+    const version = await connection.getVersion();
+    const slot = await connection.getSlot();
+    assert(slot > 0, "the chain reported slot 0");
+    return `solana-core ${version["solana-core"]}, slot ${slot}`;
+  });
+
+  await check("link encode/decode round-trip", async () => {
+    const request: PaymentRequest = {
+      to: KNOWN_NAME,
+      label: "Bakery Tab",
+      note: "one dozen, sesame",
+      amount: "25000",
+      ref: "INV-0007",
+    };
+    const encoded = encodeRequest(request);
+    const decoded = decodeRequest(encoded);
+    assert(decoded.to === KNOWN_NAME, `recipient came back as ${decoded.to}`);
+    assert(decoded.amount === "25000", `amount came back as ${decoded.amount}`);
+    assert(decoded.note === "one dozen, sesame", `note came back as ${decoded.note}`);
+    assert(decoded.ref === "INV-0007", `reference came back as ${decoded.ref}`);
+    assert(encodeRequest(decoded) === encoded, "re-encoding the decoded request changed the link");
+
+    const memo = buildMemo(decoded);
+    const parsedMemo = parseMemo(memo);
+    assert(parsedMemo?.ref === "INV-0007", "the memo lost its reference");
+    assert(parsedMemo?.note === "one dozen, sesame", "the memo lost its note");
+    assert(parseMemo("hello world") === null, "a foreign memo was read as a Cookie Jar payment");
+
+    return `${encoded.length} characters, memo "${memo}"`;
+  });
+
+  await check("link rejects a damaged payload", async () => {
+    let threw = false;
+    try {
+      decodeRequest("not-a-real-payload");
+    } catch {
+      threw = true;
+    }
+    assert(threw, "a damaged link decoded without complaint");
+    return "a damaged payload is refused rather than half-read";
+  });
+
+  await check(".cook name resolves on chain", async () => {
+    const domain = await fetchDomain(connection, KNOWN_NAME);
+    assert(domain !== null, `${KNOWN_NAME} is not registered`);
+    const resolved = await resolveRecipient(connection, KNOWN_NAME);
+    assert(
+      resolved.address.toBase58() === domain?.owner,
+      "resolveRecipient and the registry disagree on the owner",
+    );
+    assert(resolved.name === KNOWN_NAME, "the resolved name was not carried through");
+    return `${KNOWN_NAME} → ${resolved.address.toBase58()} (registry account ${domain?.name}, legacy=${domain?.legacy})`;
+  });
+
+  await check(".cook name that is not registered is refused", async () => {
+    const missing = "definitely-not-registered-x";
+    const domain = await fetchDomain(connection, missing);
+    assert(domain === null, `${missing}.cook unexpectedly exists`);
+    let threw = false;
+    try {
+      await resolveRecipient(connection, `${missing}.cook`);
+    } catch {
+      threw = true;
+    }
+    assert(threw, "an unregistered name resolved to an address");
+    return `${missing}.cook resolves to nothing, and paying it is refused`;
+  });
+
+  let cookPrice: number | null = null;
+  await check("USD quote from the Cookiescan price feed", async () => {
+    cookPrice = await fetchCookPriceUsd();
+    assert(cookPrice !== null && cookPrice > 0, "Cookiescan returned no COOK price");
+    const raw = usdToRaw("25.00", cookPrice as number, COOK_DECIMALS);
+    const ui = rawToUi(raw, COOK_DECIMALS);
+    const backToUsd = Number(ui) * (cookPrice as number);
+    assert(Math.abs(backToUsd - 25) < 0.01, `$25 round-tripped to $${backToUsd.toFixed(4)}`);
+    return `COOK = $${cookPrice}; $25.00 = ${groupDigits(ui)} ${COOK_SYMBOL}`;
+  });
+
+  await check("token registry search", async () => {
+    const results = await searchTokens("trash", 5);
+    assert(results.length > 0, "the registry matched nothing for 'trash'");
+    const trash = await fetchToken(TRASHCOIN_MINT);
+    assert(trash !== null, "TRASHCOIN is not in the registry");
+    assert(trash?.decimals === 9, `TRASHCOIN reported ${trash?.decimals} decimals`);
+    return `${results.length} matches; ${trash?.symbol} has ${trash?.decimals} decimals at $${trash?.priceUsd}`;
+  });
+
+  await check("COOK payment simulates clean from a funded wallet", async () => {
+    const rawAmount = uiToRaw("1000", COOK_DECIMALS);
+    const payer = await findFundedWallet(rawAmount + 10_000_000n);
+    const { transaction } = await buildPayment({
+      connection,
+      payer,
+      recipient: SINK,
+      rawAmount,
+      decimals: COOK_DECIMALS,
+      memo: buildMemo({ to: SINK.toBase58(), note: "live check", ref: "LIVE-1" }),
+    });
+    const outcome = await simulatePayment(connection, transaction);
+    assert(outcome.ok, `simulation failed: ${outcome.message ?? JSON.stringify(outcome.err)}`);
+    assert(
+      outcome.logs.some((l) => l.includes("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")),
+      "the memo program did not run",
+    );
+    return `1,000 ${COOK_SYMBOL} from ${payer.toBase58()}, ${outcome.logs.length} log lines, memo executed`;
+  });
+
+  await check("COOK payment from an unfunded payer fails on funds alone", async () => {
+    const payer = Keypair.generate().publicKey;
+    const { transaction } = await buildPayment({
+      connection,
+      payer,
+      recipient: SINK,
+      rawAmount: uiToRaw("1000", COOK_DECIMALS),
+      decimals: COOK_DECIMALS,
+      memo: buildMemo({ to: SINK.toBase58(), note: "live check" }),
+    });
+    const outcome = await simulatePayment(connection, transaction);
+    assert(!outcome.ok, "an empty wallet simulated a successful payment");
+    assert(
+      outcome.insufficientFunds,
+      `the failure was not about funds: ${JSON.stringify(outcome.err)} ${outcome.logs.join(" | ")}`,
+    );
+    return `${payer.toBase58()} holds nothing; the only error is ${JSON.stringify(outcome.err)} (unfundedAccount=${outcome.unfundedAccount}), so the transaction is otherwise valid`;
+  });
+
+  await check("SPL token payment simulates clean from a real holder", async () => {
+    const mint = new PublicKey(TRASHCOIN_MINT);
+    const holder = await findTokenHolder(mint);
+    const rawAmount = holder.raw / 1000n > 0n ? holder.raw / 1000n : 1n;
+    const built = await buildPayment({
+      connection,
+      payer: holder.owner,
+      recipient: SINK,
+      rawAmount,
+      mint: TRASHCOIN_MINT,
+      decimals: holder.decimals,
+      memo: buildMemo({ to: SINK.toBase58(), note: "live check", ref: "LIVE-2" }),
+    });
+    const outcome = await simulatePayment(connection, built.transaction);
+    assert(outcome.ok, `simulation failed: ${outcome.message ?? JSON.stringify(outcome.err)}`);
+    const program = built.tokenProgramId?.equals(TOKEN_2022_PROGRAM_ID)
+      ? "Token-2022"
+      : built.tokenProgramId?.equals(TOKEN_PROGRAM_ID)
+        ? "Token"
+        : "unknown";
+    return `${rawToUi(rawAmount, holder.decimals)} tokens from ${holder.owner.toBase58()} over ${program}; recipient account created in the same transaction: ${built.createsRecipientAccount}`;
+  });
+
+  await check("a payment to the connected wallet's own jar is refused", async () => {
+    const payer = Keypair.generate().publicKey;
+    let threw = false;
+    try {
+      await buildPayment({
+        connection,
+        payer,
+        recipient: payer,
+        rawAmount: 1n,
+        decimals: COOK_DECIMALS,
+        memo: "x",
+      });
+    } catch {
+      threw = true;
+    }
+    assert(threw, "a wallet was allowed to build a payment to itself");
+    return "paying your own jar is refused before a transaction is built";
+  });
+
+  await check("swap quote from the aggregators", async () => {
+    const quote = await bestSwapQuote({
+      inputMint: TRASHCOIN_MINT,
+      outputMint: COOK_MINT,
+      rawAmount: uiToRaw("1000", 9).toString(),
+    });
+    assert(quote !== null, "neither aggregator found a route for TRASHCOIN → COOK");
+    assert(BigInt(quote?.outAmount ?? "0") > 0n, "the winning quote returned nothing out");
+    assert(
+      BigInt(quote?.minOutAmount ?? "0") <= BigInt(quote?.outAmount ?? "0"),
+      "the quote's minimum out is larger than its expected out",
+    );
+    return `${quote?.aggregator}: 1,000 TRASHCOIN → ${rawToUi(BigInt(quote?.outAmount ?? "0"), COOK_DECIMALS)} ${COOK_SYMBOL} via ${quote?.venues.join(" → ")}`;
+  });
+
+  await check("jar history reads from chain", async () => {
+    const jar = await resolveRecipient(connection, KNOWN_NAME);
+    const payments = await fetchJarHistory(connection, jar.address, 20);
+    assert(Array.isArray(payments), "history did not come back as a list");
+    for (const payment of payments) {
+      assert(payment.rawAmount > 0n, "a history row recorded a non-positive amount");
+      assert(payment.signature.length > 0, "a history row has no signature");
+    }
+    return `${KNOWN_NAME} (${jar.address.toBase58()}): ${payments.length} Cookie Jar payments among its recent signatures`;
+  });
+
+  await check("bridge is reachable for payers with no COOK", async () => {
+    const response = await fetch(BRIDGE_URL, { redirect: "follow" });
+    assert(response.ok, `the bridge answered HTTP ${response.status}`);
+    return `${BRIDGE_URL} → HTTP ${response.status} at ${response.url}`;
+  });
+
+  console.log(`\n${passed} passed, ${failed} failed`);
+  if (failed > 0) process.exitCode = 1;
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

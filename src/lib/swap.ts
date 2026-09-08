@@ -1,0 +1,171 @@
+import { CANDYSHOP_API, COOKIEBOX_AGG_API, DEFAULT_SLIPPAGE_BPS } from "./config";
+import { fetchJson, HttpError } from "./http";
+
+/**
+ * The optional swap step. A payer who holds some other Cookie Chain token but not the one an invoice
+ * asks for gets a quote here, swaps, and then pays — two transactions, both theirs, neither
+ * custodial.
+ *
+ * Two aggregators cover the chain's liquidity and they do not agree on routes, so both are asked and
+ * the better output wins. Cookiebox is the router behind cookiebox.app; Candy Shop is the one behind
+ * swap.cookiescan.io. Either can answer "no route", which is a real answer, not an error.
+ */
+
+export type Aggregator = "cookiebox" | "candyshop";
+
+export interface SwapQuote {
+  aggregator: Aggregator;
+  inputMint: string;
+  outputMint: string;
+  /** Base units in and out. Strings, because these exceed what a double holds. */
+  inAmount: string;
+  outAmount: string;
+  minOutAmount: string;
+  priceImpactPct: number | null;
+  /** Venue names along the route, in order. */
+  venues: string[];
+  /** Where the payer finishes the swap. Cookie Jar quotes; it does not route funds through itself. */
+  swapUrl: string;
+}
+
+interface AggSegment {
+  pool?: string;
+  venue?: string;
+  hopIndex?: number;
+}
+
+interface AggQuoteBody {
+  route?: {
+    inAmount?: string;
+    outAmount?: string;
+    netOutAmount?: string;
+    minOutAmount?: string;
+    priceImpactPct?: number | null;
+    segments?: AggSegment[];
+  };
+}
+
+interface CandyShopSegment {
+  dex?: string;
+  programName?: string;
+  hopIndex?: number;
+}
+
+interface CandyShopQuoteBody {
+  multiRoute?: {
+    totalInAmount?: string;
+    totalOutAmount?: string;
+    minOutAmount?: string;
+    combinedPriceImpactPct?: number;
+    segments?: CandyShopSegment[];
+  };
+}
+
+const COOKIEBOX_SWAP_URL = "https://cookiebox.app";
+const CANDYSHOP_SWAP_URL = "https://swap.cookiescan.io";
+
+function isNoRoute(error: unknown): boolean {
+  return error instanceof HttpError && (error.status === 404 || error.status === 400);
+}
+
+async function quoteCookiebox(
+  inputMint: string,
+  outputMint: string,
+  rawAmount: string,
+  slippageBps: number,
+): Promise<SwapQuote | null> {
+  const params = new URLSearchParams({
+    inputMint,
+    outputMint,
+    amount: rawAmount,
+    slippageBps: String(slippageBps),
+  });
+  let body: AggQuoteBody;
+  try {
+    body = await fetchJson<AggQuoteBody>(`${COOKIEBOX_AGG_API}/quote?${params}`);
+  } catch (error) {
+    if (isNoRoute(error)) return null;
+    throw error;
+  }
+  const route = body.route;
+  if (!route?.inAmount || !route.outAmount) return null;
+  const out = route.netOutAmount ?? route.outAmount;
+  return {
+    aggregator: "cookiebox",
+    inputMint,
+    outputMint,
+    inAmount: route.inAmount,
+    outAmount: out,
+    minOutAmount: route.minOutAmount ?? out,
+    priceImpactPct: route.priceImpactPct ?? null,
+    venues: (route.segments ?? []).map((s) => s.venue ?? "unknown"),
+    swapUrl: COOKIEBOX_SWAP_URL,
+  };
+}
+
+async function quoteCandyShop(
+  inputMint: string,
+  outputMint: string,
+  rawAmount: string,
+  slippageBps: number,
+): Promise<SwapQuote | null> {
+  const params = new URLSearchParams({
+    inputMint,
+    outputMint,
+    amount: rawAmount,
+    slippageBps: String(slippageBps),
+  });
+  let body: CandyShopQuoteBody;
+  try {
+    body = await fetchJson<CandyShopQuoteBody>(`${CANDYSHOP_API}/quote/multi-route?${params}`);
+  } catch (error) {
+    if (isNoRoute(error)) return null;
+    throw error;
+  }
+  const route = body.multiRoute;
+  if (!route?.totalInAmount || !route.totalOutAmount) return null;
+  return {
+    aggregator: "candyshop",
+    inputMint,
+    outputMint,
+    inAmount: route.totalInAmount,
+    outAmount: route.totalOutAmount,
+    minOutAmount: route.minOutAmount ?? route.totalOutAmount,
+    priceImpactPct:
+      typeof route.combinedPriceImpactPct === "number" && Number.isFinite(route.combinedPriceImpactPct)
+        ? route.combinedPriceImpactPct
+        : null,
+    venues: (route.segments ?? []).map((s) => s.programName ?? s.dex ?? "unknown"),
+    swapUrl: CANDYSHOP_SWAP_URL,
+  };
+}
+
+/**
+ * Ask both aggregators and keep the larger output. A rejection from one is not a failure — Cookie
+ * Chain's liquidity is thin enough that a token with a route on one router often has none on the
+ * other. Only a pair with no route anywhere returns null.
+ */
+export async function bestSwapQuote(args: {
+  inputMint: string;
+  outputMint: string;
+  /** Input amount in base units. */
+  rawAmount: string;
+  slippageBps?: number;
+}): Promise<SwapQuote | null> {
+  const { inputMint, outputMint, rawAmount } = args;
+  if (inputMint === outputMint) return null;
+  const slippageBps = args.slippageBps ?? DEFAULT_SLIPPAGE_BPS;
+
+  const results = await Promise.allSettled([
+    quoteCookiebox(inputMint, outputMint, rawAmount, slippageBps),
+    quoteCandyShop(inputMint, outputMint, rawAmount, slippageBps),
+  ]);
+
+  const quotes = results
+    .filter((r): r is PromiseFulfilledResult<SwapQuote | null> => r.status === "fulfilled")
+    .map((r) => r.value)
+    .filter((q): q is SwapQuote => q !== null);
+
+  if (quotes.length === 0) return null;
+  return quotes.reduce((best, q) => (BigInt(q.outAmount) > BigInt(best.outAmount) ? q : best));
+}
