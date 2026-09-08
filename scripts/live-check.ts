@@ -169,13 +169,26 @@ async function main(): Promise<void> {
 
   let cookPrice: number | null = null;
   await check("USD quote from the Cookiescan price feed", async () => {
+    // Through the same call the Create page makes. The dollar option is offered only when the
+    // selected token carries a price, so a native token that comes back unpriced silently disables
+    // dollar-quoted requests.
+    const native = await fetchToken(COOK_MINT);
+    assert(native !== null, `the asset registry returned nothing for ${COOK_MINT}`);
+    assert(
+      native?.priceUsd !== null && (native?.priceUsd ?? 0) > 0,
+      "the native token came back unpriced, which disables dollar-quoted requests on the Create page",
+    );
+    assert(native?.mint === COOK_MINT, `the native token came back with mint ${native?.mint}`);
+    assert(native?.decimals === COOK_DECIMALS, `the native token came back with ${native?.decimals} decimals`);
+
     cookPrice = await fetchCookPriceUsd();
     assert(cookPrice !== null && cookPrice > 0, "Cookiescan returned no COOK price");
+    assert(cookPrice === native?.priceUsd, "the two native price paths disagree");
     const raw = usdToRaw("25.00", cookPrice as number, COOK_DECIMALS);
     const ui = rawToUi(raw, COOK_DECIMALS);
     const backToUsd = Number(ui) * (cookPrice as number);
     assert(Math.abs(backToUsd - 25) < 0.01, `$25 round-tripped to $${backToUsd.toFixed(4)}`);
-    return `COOK = $${cookPrice}; $25.00 = ${groupDigits(ui)} ${COOK_SYMBOL}`;
+    return `${native?.symbol} = $${cookPrice} from /v1/assets/cook (mint ${native?.mint}, ${native?.decimals} decimals); $25.00 = ${groupDigits(ui)} ${COOK_SYMBOL}`;
   });
 
   await check("token registry search", async () => {

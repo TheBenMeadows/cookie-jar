@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { rawToUi, uiToRaw, groupDigits } from "./format";
+import { displayAmount, groupDigits, isRounded, rawToUi, uiToRaw } from "./format";
 import { usdToRaw, rawToUsd } from "./quote";
 import {
   buildMemo,
@@ -34,6 +34,32 @@ describe("amount conversion", () => {
 
   it("groups only the integer part", () => {
     expect(groupDigits("273827.349709201")).toBe("273,827.349709201");
+  });
+});
+
+describe("amounts as a person reads them", () => {
+  const cook = (ui: string): bigint => uiToRaw(ui, 9);
+
+  it("keeps every zero in a round number", () => {
+    // The trailing-zero trim once ran on the whole string, which turned 25,000 into 25.
+    expect(displayAmount(cook("25000"), 9)).toBe("25,000");
+    expect(displayAmount(cook("1000"), 9)).toBe("1,000");
+    expect(displayAmount(cook("50000"), 9)).toBe("50,000");
+    expect(isRounded(cook("25000"), 9)).toBe(false);
+  });
+
+  it("cuts a dollar-quoted amount down to something readable", () => {
+    expect(displayAmount(cook("273827.349709201"), 9)).toBe("273,827");
+    expect(isRounded(cook("273827.349709201"), 9)).toBe(true);
+  });
+
+  it("keeps precision on small amounts, where every digit counts", () => {
+    expect(displayAmount(cook("0.000005"), 9)).toBe("0.000005");
+    expect(displayAmount(cook("1.23456789"), 9)).toBe("1.2346");
+  });
+
+  it("never changes the exact figure a transaction carries", () => {
+    expect(rawToUi(cook("273827.349709201"), 9)).toBe("273827.349709201");
   });
 });
 

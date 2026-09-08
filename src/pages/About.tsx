@@ -89,7 +89,7 @@ export function About(): JSX.Element {
       <hr className="perf" />
 
       <h2>What this app touches</h2>
-      <dl className="rows">
+      <dl className="rows stacked">
         <div className="row">
           <dt>RPC</dt>
           <dd className="mono">{new URL(RPC_URL).host}</dd>

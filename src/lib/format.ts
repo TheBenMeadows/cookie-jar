@@ -26,6 +26,36 @@ export function rawToUi(raw: bigint | string, decimals: number): string {
   return `${negative ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
 }
 
+/**
+ * An amount as a person reads it, grouped and cut to a sane number of decimal places. A dollar-quoted
+ * request divides out to every one of a token's decimals — $25.00 of COOK is 273,827.349709201 — and
+ * nine of them in a headline is noise a payer cannot act on.
+ *
+ * Display only. `rawToUi` stays the exact figure, and the transaction always carries `raw` itself.
+ */
+export function displayAmount(raw: bigint | string, decimals: number): string {
+  const exact = rawToUi(raw, decimals);
+  const value = Number(exact);
+  if (!Number.isFinite(value)) return groupDigits(exact);
+
+  const magnitude = Math.abs(value);
+  let places: number;
+  if (magnitude >= 1000) places = 0;
+  else if (magnitude >= 1) places = 4;
+  else places = Math.min(decimals, 8);
+
+  // Trailing zeros are only ever droppable after a decimal point. Stripping them from a whole
+  // number turns 25,000 into 25.
+  let text = value.toFixed(places);
+  if (text.includes(".")) text = text.replace(/0+$/, "").replace(/\.$/, "");
+  return groupDigits(text);
+}
+
+/** True when `displayAmount` had to round, so the exact figure is worth showing alongside it. */
+export function isRounded(raw: bigint | string, decimals: number): boolean {
+  return displayAmount(raw, decimals) !== groupDigits(rawToUi(raw, decimals));
+}
+
 /** Group the integer part with thin separators for display. Never used to build a transaction. */
 export function groupDigits(value: string): string {
   const [whole = "", fraction] = value.split(".");

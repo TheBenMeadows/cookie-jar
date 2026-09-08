@@ -4,9 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getConnection } from "../lib/chain";
 import { fetchPrimaryName } from "../lib/domains";
 import { payUrl, jarUrl, RequestError, type PaymentRequest } from "../lib/request";
-import { searchTokens, COOK_TOKEN, type TokenInfo } from "../lib/tokens";
+import { searchTokens, fetchNativeToken, COOK_TOKEN, type TokenInfo } from "../lib/tokens";
 import { Qr } from "../components/Qr";
-import { shortAddress } from "../lib/format";
+import { groupDigits, shortAddress } from "../lib/format";
 import { COOK_MINT } from "../lib/config";
 
 type PricingMode = "fixed" | "usd" | "open";
@@ -27,6 +27,7 @@ export function Create(): JSX.Element {
   const [amountVal, setAmountVal] = useState("");
   const [usdVal, setUsdVal] = useState("");
   const [selectedToken, setSelectedToken] = useState<TokenInfo>(COOK_TOKEN);
+  const [nativeToken, setNativeToken] = useState<TokenInfo>(COOK_TOKEN);
 
   const [tokenQuery, setTokenQuery] = useState("");
   const [searchResults, setSearchResults] = useState<TokenInfo[]>([]);
@@ -39,6 +40,23 @@ export function Create(): JSX.Element {
     () => window.location.origin + window.location.pathname.replace(/index\.html$/, ""),
     [],
   );
+
+  // COOK's price decides whether a request can be quoted in dollars. It has to be read: the
+  // constant the form starts from carries no price, and treating that as "Cookiescan has no price"
+  // would disable the dollar option on a chain whose gas token is priced.
+  useEffect(() => {
+    let live = true;
+    fetchNativeToken()
+      .then((token) => {
+        if (!live) return;
+        setNativeToken(token);
+        setSelectedToken((current) => (current.mint === COOK_MINT ? token : current));
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
 
   // Auto-prefill recipient when wallet connects if recipient field is empty
   useEffect(() => {
@@ -95,8 +113,8 @@ export function Create(): JSX.Element {
   // Offer COOK first, followed by filtered search results
   const availableTokens = useMemo(() => {
     const listWithoutCook = searchResults.filter((t) => t.mint !== COOK_MINT);
-    return [COOK_TOKEN, ...listWithoutCook];
-  }, [searchResults]);
+    return [nativeToken, ...listWithoutCook];
+  }, [searchResults, nativeToken]);
 
   const handleSelectToken = useCallback((token: TokenInfo) => {
     setSelectedToken(token);
@@ -155,6 +173,20 @@ export function Create(): JSX.Element {
     origin,
   ]);
 
+  /**
+   * Why the link cannot be made yet, in the words the button wears. A mode with an empty amount is
+   * blocked rather than encoded: "a fixed amount of COOK" with the amount left blank would otherwise
+   * silently produce an open tip jar, which is a different request from the one that was asked for.
+   */
+  const blockedReason = useMemo((): string | null => {
+    if (!recipient.trim()) return "Enter a recipient to make the link";
+    if (requestError) return requestError;
+    if (pricingMode === "fixed" && !amountVal.trim()) return `Enter an amount in ${selectedToken.symbol}`;
+    if (pricingMode === "usd" && !usdVal.trim()) return "Enter an amount in US dollars";
+    if (!payLinkUrl) return "Fill in the form to make the link";
+    return null;
+  }, [recipient, requestError, pricingMode, amountVal, usdVal, selectedToken.symbol, payLinkUrl]);
+
   const handleCopy = useCallback(() => {
     if (!payLinkUrl) return;
     navigator.clipboard
@@ -170,11 +202,12 @@ export function Create(): JSX.Element {
     <>
       <h1>Make a payment link</h1>
       <p className="lede">
-        Fill this in and you get a link and a QR code. Whoever opens it pays you on Cookie Chain, and
-        the payment lands in your jar. Nothing here is stored anywhere — the request travels inside
-        the link.
+        Whoever opens the link pays you on Cookie Chain. Nothing is stored on a server: the request
+        is carried inside the link itself.
       </p>
 
+      <div className="split">
+        <div>
       <label className="field">
         <span>Recipient</span>
         <input
@@ -185,61 +218,33 @@ export function Create(): JSX.Element {
         />
       </label>
 
-      <label className="field">
-        <span>Label</span>
-        <input
-          type="text"
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          placeholder="Baker's Dozen"
-        />
-      </label>
-
-      <label className="field">
-        <span>Note</span>
-        <input
-          type="text"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="Order #1042 — 12 sourdough loaves"
-        />
-      </label>
-
-      <label className="field">
-        <span>Reference</span>
-        <input
-          type="text"
-          value={ref}
-          onChange={(e) => setRef(e.target.value)}
-          placeholder="INV-2026-001"
-        />
-      </label>
-
       <div className="field">
         <span>Token</span>
         <input
           type="search"
           value={tokenQuery}
           onChange={(e) => setTokenQuery(e.target.value)}
-          placeholder="Search Cookiescan by name, symbol or mint"
+          placeholder="Leave empty to be paid in COOK"
         />
-        <ul className="results">
-          {availableTokens.map((t) => (
-            <li key={t.mint}>
-              <button
-                type="button"
-                aria-pressed={t.mint === selectedToken.mint}
-                onClick={() => handleSelectToken(t)}
-              >
-                <span className="ticker">{t.symbol}</span>
-                <span>{t.name}</span>
-                <span className="addr">
-                  {t.mint === COOK_MINT ? "native" : shortAddress(t.mint)}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
+        {tokenQuery.trim() !== "" && (
+          <ul className="results">
+            {availableTokens.map((t) => (
+              <li key={t.mint}>
+                <button
+                  type="button"
+                  aria-pressed={t.mint === selectedToken.mint}
+                  onClick={() => handleSelectToken(t)}
+                >
+                  <span className="ticker">{t.symbol}</span>
+                  <span>{t.name}</span>
+                  <span className="addr">
+                    {t.mint === COOK_MINT ? "native" : shortAddress(t.mint)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <span className="hint">
           Paying in {selectedToken.symbol}
           {selectedToken.mint === COOK_MINT ? "" : ` (${selectedToken.decimals} decimals)`}.
@@ -324,9 +329,58 @@ export function Create(): JSX.Element {
         </label>
       )}
 
+      <details className="more">
+        <summary>Label, note and reference</summary>
+        <label className="field">
+          <span>Label</span>
+          <input
+            type="text"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Baker's Dozen"
+          />
+          <span className="hint">The heading the payer sees.</span>
+        </label>
+
+        <label className="field">
+          <span>Note</span>
+          <input
+            type="text"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Order #1042, 12 sourdough loaves"
+          />
+          <span className="hint">Goes on chain in the memo, so it is public.</span>
+        </label>
+
+        <label className="field">
+          <span>Reference</span>
+          <input
+            type="text"
+            value={ref}
+            onChange={(e) => setRef(e.target.value)}
+            placeholder="INV-2026-001"
+          />
+          <span className="hint">Your own invoice number. Also goes in the memo.</span>
+        </label>
+      </details>
+
       {requestError && <p className="alarm">{requestError}</p>}
 
-      {payLinkUrl && (
+      <p>
+        <button
+          type="button"
+          className="primary"
+          disabled={blockedReason !== null}
+          onClick={handleCopy}
+        >
+          {blockedReason ?? (copied ? "Copied" : "Copy payment link")}
+        </button>
+      </p>
+        </div>
+
+        <div className="output">
+      {payLinkUrl && !blockedReason ? (
         <>
           <hr className="perf" />
           <div className="linkbox">
@@ -352,7 +406,7 @@ export function Create(): JSX.Element {
               <dt>Amount</dt>
               <dd>
                 {pricingMode === "fixed"
-                  ? `${amountVal || "0"} ${selectedToken.symbol}`
+                  ? `${groupDigits(amountVal || "0")} ${selectedToken.symbol}`
                   : pricingMode === "usd"
                     ? `$${usdVal || "0"}`
                     : "Whatever the payer chooses"}
@@ -374,7 +428,13 @@ export function Create(): JSX.Element {
             <a href={jarUrl(recipient.trim(), origin)}>See this jar's history</a>
           </p>
         </>
+      ) : (
+        <p className="small waiting">
+          The link and its QR code appear here once the form is filled in.
+        </p>
       )}
+        </div>
+      </div>
     </>
   );
 }

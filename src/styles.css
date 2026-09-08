@@ -112,6 +112,37 @@ a {
   padding: 1.75rem 0 0;
 }
 
+/*
+ * The Create page is the one page with two things to show at once: the form being filled in and the
+ * link it produces. Given the room, they sit side by side, so the QR updates in view while the form
+ * is edited. Every other page is prose or a ledger, where 34rem is the measure that reads best and
+ * widening it would make it worse.
+ */
+.split {
+  display: grid;
+  gap: 0 3rem;
+}
+
+@media (min-width: 60rem) {
+  .page:has(.split) {
+    max-width: 64rem;
+  }
+
+  .split {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+
+  .split > .output {
+    position: sticky;
+    top: 1.5rem;
+  }
+
+  .split > .output .perf {
+    display: none;
+  }
+}
+
 h1 {
   margin: 1.5rem 0 0.25rem;
   font-size: 1.5rem;
@@ -276,6 +307,36 @@ textarea {
   margin-top: 0.3rem;
 }
 
+/* The optional fields. Collapsed, they cost one line, which keeps the action above the fold. */
+.more {
+  margin-bottom: 1.25rem;
+  border-top: 1px solid var(--rule-faint);
+  border-bottom: 1px solid var(--rule-faint);
+}
+
+.more > summary {
+  padding: 0.7rem 0;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.more[open] > summary {
+  border-bottom: 1px solid var(--rule-faint);
+  margin-bottom: 1rem;
+}
+
+/* The placeholder that stands where the finished link will be. */
+.waiting {
+  border: 2px dashed var(--rule-faint);
+  padding: 1.5rem 1rem;
+  text-align: center;
+  margin-top: 1.75rem;
+}
+
 .pair {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -301,9 +362,17 @@ button {
   letter-spacing: 0.04em;
 }
 
+/*
+ * A disabled control keeps full contrast and loses its fill. Fading a filled button leaves pale text
+ * on a mid grey, which is the one state a payer most needs to be able to read: it is carrying the
+ * reason the action is unavailable.
+ */
 button:disabled {
-  opacity: 0.4;
   cursor: default;
+  background: transparent;
+  color: var(--ink-soft);
+  border-color: var(--rule-faint);
+  font-weight: 400;
 }
 
 .primary {
@@ -357,6 +426,27 @@ button:disabled {
   margin: 0;
   text-align: right;
   overflow-wrap: anywhere;
+}
+
+/*
+ * For rows whose value is a base58 address. Right-aligning a 44-character key against a phone's
+ * width breaks it into ragged two- and three-line stacks; below the breakpoint the value takes its
+ * own full-width line instead.
+ */
+@media (max-width: 34rem) {
+  .rows.stacked .row {
+    display: block;
+  }
+
+  .rows.stacked .row dd {
+    text-align: left;
+    margin-top: 0.15rem;
+  }
+
+  /* Just small enough that a 44-character base58 key sits on one line at 390px. */
+  .rows.stacked .row dd.mono {
+    font-size: 0.78em;
+  }
 }
 
 /* --- The amount ------------------------------------------------------------------------------- */

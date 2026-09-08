@@ -50,6 +50,11 @@ function toTokenInfo(payload: CookiescanTokenPayload): TokenInfo | null {
   };
 }
 
+/**
+ * The native token before its price has been read. Every field here is a local constant, because the
+ * mint and the decimals decide how a transfer is built and must never come from a network answer.
+ * The price starts null and is filled in by `fetchNativeToken`.
+ */
 export const COOK_TOKEN: TokenInfo = {
   mint: COOK_MINT,
   name: "Cookie",
@@ -60,8 +65,37 @@ export const COOK_TOKEN: TokenInfo = {
   liquidityUsd: null,
 };
 
-/** One token by mint. `cook` is accepted as an alias for the native token. */
+interface CookiescanAsset {
+  assetId?: string;
+  name?: string;
+  symbol?: string;
+  stats?: { price?: number | string | null; liquidity?: number | null };
+}
+
+/**
+ * COOK from the canonical asset registry rather than from a mint lookup.
+ *
+ * COOK exists on Cookie Chain under three mints: the native gas token, the wrapped `So111…112` form
+ * and the bridged Solana mint. `/v1/assets/cook` resolves all three to one entry with one price,
+ * which is the figure a merchant means by "the COOK price". Only the price and the liquidity are
+ * taken from it — the mint and the decimals stay local, so a change on Cookiescan's side can never
+ * alter how a transfer is built.
+ */
+export async function fetchNativeToken(): Promise<TokenInfo> {
+  const asset = await fetchJson<CookiescanAsset>(`${COOKIESCAN_API}/v1/assets/cook`);
+  return {
+    ...COOK_TOKEN,
+    priceUsd: toNumber(asset.stats?.price),
+    liquidityUsd: toNumber(asset.stats?.liquidity),
+  };
+}
+
+/**
+ * One token by mint. The native token and its wrapped mint both route to the asset registry; every
+ * other mint is read from the price endpoint.
+ */
 export async function fetchToken(mint: string): Promise<TokenInfo | null> {
+  if (mint === COOK_MINT || mint === "cook") return fetchNativeToken();
   const body = await fetchJson<{ success?: boolean; data?: CookiescanTokenPayload }>(
     `${COOKIESCAN_API}/api/price/${encodeURIComponent(mint)}`,
   );
@@ -71,8 +105,7 @@ export async function fetchToken(mint: string): Promise<TokenInfo | null> {
 /** COOK's dollar price. Returns null rather than throwing: a missing price hides a figure, not a page. */
 export async function fetchCookPriceUsd(): Promise<number | null> {
   try {
-    const token = await fetchToken("cook");
-    return token?.priceUsd ?? null;
+    return (await fetchNativeToken()).priceUsd;
   } catch {
     return null;
   }

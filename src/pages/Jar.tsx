@@ -168,10 +168,8 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
   return (
     <>
       <h1>{headerTitle}</h1>
-      <p className="lede">
-        <a href={explorerAddressUrl(addressBase58)} className="mono">
-          {addressBase58}
-        </a>
+      <p className="small mono">
+        <a href={explorerAddressUrl(addressBase58)}>{addressBase58}</a>
       </p>
 
       {totals.map((t) => (
@@ -214,10 +212,15 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
           </div>
         </>
       ) : (
-        <p>
-          No Cookie Jar payments have reached this address yet. Only transfers carrying a Cookie Jar
-          memo appear here; other transfers to the same address are not shown.
-        </p>
+        <>
+          <p>
+            No Cookie Jar payments have reached this address yet. A transfer to this address without
+            a Cookie Jar memo is not shown here.
+          </p>
+          <p>
+            <a href="#/">Make a payment link for this address</a>
+          </p>
+        </>
       )}
 
       <hr className="perf" />

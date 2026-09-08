@@ -15,7 +15,14 @@ import {
 } from "../lib/config";
 import { fetchBalanceOf } from "../lib/balances";
 import { resolveRecipient } from "../lib/domains";
-import { formatUsd, groupDigits, rawToUi, shortAddress, uiToRaw } from "../lib/format";
+import {
+  displayAmount,
+  formatUsd,
+  isRounded,
+  rawToUi,
+  shortAddress,
+  uiToRaw,
+} from "../lib/format";
 import { buildPayment, simulatePayment } from "../lib/pay";
 import { rawToUsd, usdToRaw } from "../lib/quote";
 import {
@@ -126,6 +133,20 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
     return balanceRaw < rawAmount ? rawAmount - balanceRaw : null;
   }, [rawAmount, balanceRaw]);
 
+  /**
+   * Why this payment cannot go, in the words the button wears. A recipient that failed to resolve
+   * blocks it before the wallet is even considered: an unregistered name and a name sitting in the
+   * marketplace escrow both reach this state, and neither has an address worth paying.
+   */
+  const payBlocker = useMemo((): string | null => {
+    if (!resolved) return "This link's recipient does not resolve";
+    if (!connected) return "Connect a wallet to pay";
+    if (stage === "sending") return "Waiting for your wallet…";
+    if (rawAmount === null) return "Enter an amount";
+    if (shortfall !== null) return `You need more ${symbol} than this wallet holds`;
+    return null;
+  }, [resolved, connected, stage, rawAmount, shortfall, symbol]);
+
   const pay = useCallback(async () => {
     if (!request || !resolved || !publicKey || rawAmount === null) return;
     setError(null);
@@ -191,7 +212,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
         <p className="stamp">Paid</p>
         <h1>{request.label ?? "Payment sent"}</h1>
         <div className="amount">
-          <span>{groupDigits(rawToUi(rawAmount ?? 0n, decimals))}</span>
+          <span>{displayAmount(rawAmount ?? 0n, decimals)}</span>
           <span className="unit">{symbol}</span>
         </div>
         {usdValue !== null && <p className="usd">{formatUsd(usdValue)} at the time of payment</p>}
@@ -246,16 +267,13 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
             value={enteredAmount}
             onChange={(e) => setEnteredAmount(e.target.value)}
             placeholder="0"
-            autoFocus
           />
           {usdValue !== null && <span className="hint">{formatUsd(usdValue)}</span>}
         </label>
       ) : (
         <>
           <div className="amount">
-            <span>
-              {rawAmount === null ? "…" : groupDigits(rawToUi(rawAmount, decimals))}
-            </span>
+            <span>{rawAmount === null ? "…" : displayAmount(rawAmount, decimals)}</span>
             <span className="unit">{symbol}</span>
           </div>
           <p className="usd">
@@ -278,6 +296,8 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
               <a href={explorerAddressUrl(resolved.address.toBase58())}>
                 {resolved.name ?? shortAddress(resolved.address.toBase58(), 8, 6)}
               </a>
+            ) : error ? (
+              request.to
             ) : (
               "resolving…"
             )}
@@ -293,6 +313,14 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
           <dt>Token</dt>
           <dd className="mono">{mint === COOK_MINT ? `${COOK_SYMBOL} (native)` : shortAddress(mint, 8, 6)}</dd>
         </div>
+        {rawAmount !== null && isRounded(rawAmount, decimals) && (
+          <div className="row">
+            <dt>Exact amount</dt>
+            <dd className="mono tabular">
+              {rawToUi(rawAmount, decimals)} {symbol}
+            </dd>
+          </div>
+        )}
         {request.ref && (
           <div className="row">
             <dt>Reference</dt>
@@ -309,7 +337,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
           <div className="row">
             <dt>You hold</dt>
             <dd className="tabular">
-              {groupDigits(rawToUi(balanceRaw, decimals))} {symbol}
+              {displayAmount(balanceRaw, decimals)} {symbol}
             </dd>
           </div>
         )}
@@ -317,21 +345,13 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
 
       {error && <p className="alarm">{error}</p>}
 
-      {!connected && (
-        <p className="small">Connect a wallet to pay. Nightly is Cookie Chain's own wallet.</p>
+      {!connected && resolved && (
+        <p className="small">Nightly is Cookie Chain's own wallet: nightly.app</p>
       )}
 
       <p>
-        <button
-          className="primary"
-          disabled={!connected || rawAmount === null || stage === "sending" || shortfall !== null}
-          onClick={() => void pay()}
-        >
-          {stage === "sending"
-            ? "Waiting for your wallet…"
-            : rawAmount === null
-              ? "Enter an amount"
-              : `Pay ${groupDigits(rawToUi(rawAmount, decimals))} ${symbol}`}
+        <button className="primary" disabled={payBlocker !== null} onClick={() => void pay()}>
+          {payBlocker ?? `Pay ${displayAmount(rawAmount ?? 0n, decimals)} ${symbol}`}
         </button>
       </p>
 
