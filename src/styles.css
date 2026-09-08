@@ -395,6 +395,19 @@ button:disabled {
   font-weight: 400;
 }
 
+/*
+ * The page's main action keeps its shape when it cannot be pressed. Emptied out it read as another
+ * input field, which is the one thing it must not look like while it is carrying the reason the
+ * payment cannot go.
+ */
+.primary:disabled {
+  background: #141414;
+  color: #fff;
+  opacity: 0.38;
+  border: 0;
+  font-weight: 700;
+}
+
 .primary {
   width: 100%;
   background: var(--ink);
@@ -433,6 +446,11 @@ button.link {
   border-top: 1px solid var(--rule-faint);
 }
 
+/* A rule immediately above a ledger is that ledger's top border; one line, not two. */
+.perf + .rows {
+  border-top: 0;
+}
+
 .row {
   display: flex;
   align-items: baseline;
@@ -456,6 +474,15 @@ button.link {
   margin: 0;
   text-align: right;
   overflow-wrap: anywhere;
+}
+
+.rows a {
+  text-decoration: none;
+}
+
+.rows a:hover,
+.rows a:focus-visible {
+  text-decoration: underline;
 }
 
 /*

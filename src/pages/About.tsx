@@ -10,7 +10,25 @@ import {
   RPC_URL,
   explorerAddressUrl,
 } from "../lib/config";
+import { shortAddress } from "../lib/format";
 import { MEMO_PREFIX } from "../lib/request";
+
+/**
+ * One address in the reference table. Shortened, because a column of full 44-character keys is a
+ * wall nobody reads; the link and its title carry the whole value for anyone comparing one.
+ */
+function ProgramRow({ label, address }: { label: string; address: string }): JSX.Element {
+  return (
+    <div className="row">
+      <dt>{label}</dt>
+      <dd className="mono">
+        <a href={explorerAddressUrl(address)} title={address}>
+          {shortAddress(address, 6, 6)}
+        </a>
+      </dd>
+    </div>
+  );
+}
 
 /** The reference page: what the app does on chain, and which addresses it touches. */
 export function About(): JSX.Element {
@@ -94,28 +112,9 @@ export function About(): JSX.Element {
           <dt>RPC</dt>
           <dd className="mono">{new URL(RPC_URL).host}</dd>
         </div>
-        <div className="row">
-          <dt>Native token</dt>
-          <dd className="mono">
-            <a href={explorerAddressUrl(COOK_MINT)}>{COOK_MINT}</a>
-          </dd>
-        </div>
-        <div className="row">
-          <dt>Memo program</dt>
-          <dd className="mono">
-            <a href={explorerAddressUrl(MEMO_PROGRAM_ID.toBase58())}>
-              {MEMO_PROGRAM_ID.toBase58()}
-            </a>
-          </dd>
-        </div>
-        <div className="row">
-          <dt>CookOven registry</dt>
-          <dd className="mono">
-            <a href={explorerAddressUrl(COOKIE_DOMAINS_PROGRAM_ID.toBase58())}>
-              {COOKIE_DOMAINS_PROGRAM_ID.toBase58()}
-            </a>
-          </dd>
-        </div>
+        <ProgramRow label="Native token" address={COOK_MINT} />
+        <ProgramRow label="Memo program" address={MEMO_PROGRAM_ID.toBase58()} />
+        <ProgramRow label="CookOven registry" address={COOKIE_DOMAINS_PROGRAM_ID.toBase58()} />
         <div className="row">
           <dt>Prices and tokens</dt>
           <dd className="mono">{new URL(COOKIESCAN_API).host}</dd>

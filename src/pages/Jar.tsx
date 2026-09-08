@@ -185,12 +185,12 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
   return (
     <>
       <h1>{headerTitle}</h1>
-      <p className="small">
-        <a className="mono" href={explorerAddressUrl(addressBase58)}>
+      <p className="small buttons">
+        <a className="mono" href={explorerAddressUrl(addressBase58)} title={addressBase58}>
           {shortAddress(addressBase58, 8, 6)}
-        </a>{" "}
-        <button className="link" type="button" onClick={handleCopyAddress}>
-          {addressCopied ? "copied" : "copy the full key"}
+        </a>
+        <button className="quiet" type="button" onClick={handleCopyAddress}>
+          {addressCopied ? "Copied" : "Copy the full key"}
         </button>
       </p>
 

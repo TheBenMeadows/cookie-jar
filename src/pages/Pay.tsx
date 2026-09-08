@@ -20,7 +20,6 @@ import {
   displayAmount,
   formatUsd,
   groupDigits,
-  isRounded,
   rawToUi,
   shortAddress,
   uiToRaw,
@@ -237,6 +236,12 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
         <hr className="perf" />
         <dl className="rows">
           <div className="row">
+            <dt>Amount paid</dt>
+            <dd className="mono tabular">
+              {groupDigits(rawToUi(rawAmount ?? 0n, decimals))} {symbol}
+            </dd>
+          </div>
+          <div className="row">
             <dt>To</dt>
             <dd className="mono">{request.to}</dd>
           </div>
@@ -303,9 +308,6 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
               : usdValue !== null
                 ? formatUsd(usdValue)
                 : ""}
-            {rawAmount !== null && isRounded(rawAmount, decimals)
-              ? ` · exactly ${groupDigits(rawToUi(rawAmount, decimals))} ${symbol}`
-              : ""}
           </p>
         </>
       )}
@@ -402,10 +404,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
         </p>
       )}
 
-      <p className="small">
-        Cookie Jar never holds the money. This page builds one transaction, your wallet signs it, and
-        the funds go straight to the address above.
-      </p>
+      {resolved && <p className="small">Cookie Jar never holds the money.</p>}
     </>
   );
 }

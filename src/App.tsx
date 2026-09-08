@@ -57,14 +57,16 @@ function Shell({ route }: { route: Route }): JSX.Element {
             </a>
             {!onPayPage && <WalletBar />}
           </header>
-          <nav className="nav">
-            <a href="#/" aria-current={route.name === "create" ? "page" : undefined}>
-              Create
-            </a>
-            <a href="#/about" aria-current={route.name === "about" ? "page" : undefined}>
-              How it works
-            </a>
-          </nav>
+          {!onPayPage && (
+            <nav className="nav">
+              <a href="#/" aria-current={route.name === "create" ? "page" : undefined}>
+                Create
+              </a>
+              <a href="#/about" aria-current={route.name === "about" ? "page" : undefined}>
+                How it works
+              </a>
+            </nav>
+          )}
           <main className="sheet">
             <Body />
           </main>
