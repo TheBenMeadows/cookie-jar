@@ -24,8 +24,13 @@ export interface SwapQuote {
   priceImpactPct: number | null;
   /** Venue names along the route, in order. */
   venues: string[];
-  /** Where the payer finishes the swap. Cookie Jar quotes; it does not route funds through itself. */
+  /** The aggregator's own site, for a payer who would rather finish the swap there. */
   swapUrl: string;
+  /**
+   * The router's own route object, handed back to it unchanged when the swap is built. Opaque here
+   * on purpose: reshaping it would mean re-deriving a route this app did not compute.
+   */
+  route: unknown;
 }
 
 interface AggSegment {
@@ -100,6 +105,7 @@ async function quoteCookiebox(
     priceImpactPct: route.priceImpactPct ?? null,
     venues: (route.segments ?? []).map((s) => s.venue ?? "unknown"),
     swapUrl: COOKIEBOX_SWAP_URL,
+    route,
   };
 }
 
@@ -137,7 +143,18 @@ async function quoteCandyShop(
         : null,
     venues: (route.segments ?? []).map((s) => s.programName ?? s.dex ?? "unknown"),
     swapUrl: CANDYSHOP_SWAP_URL,
+    route,
   };
+}
+
+/** Quote one named aggregator. Returns null when that router has no route for the pair. */
+export async function quoteFrom(
+  aggregator: Aggregator,
+  args: { inputMint: string; outputMint: string; rawAmount: string; slippageBps?: number },
+): Promise<SwapQuote | null> {
+  const slippageBps = args.slippageBps ?? DEFAULT_SLIPPAGE_BPS;
+  const quote = aggregator === "cookiebox" ? quoteCookiebox : quoteCandyShop;
+  return quote(args.inputMint, args.outputMint, args.rawAmount, slippageBps);
 }
 
 /**
@@ -173,19 +190,17 @@ export async function bestSwapQuote(args: {
 // --- Executing a swap -----------------------------------------------------------------------------
 
 export interface BuiltSwap {
-  /** An unsigned v0 transaction, fee payer already set to `owner`. */
+  /** An unsigned v0 transaction, fee payer already set to the swapper's own wallet. */
   transactionBase64: string;
-  blockhash: string;
-  lastValidBlockHeight: number;
 }
+
+/** A build can take several confirmations server-side, so it gets a much longer deadline than a quote. */
+const BUILD_TIMEOUT_MS = 60_000;
 
 /**
  * Ask Cookiebox to build the swap. It re-quotes server-side and answers with an unsigned versioned
  * transaction whose fee payer is the payer's own wallet: Cookie Jar never holds the funds, never
  * signs, and never sees a key. The caller simulates it, has the wallet sign it, and sends it.
- *
- * `/swap-tx` may extend the aggregator's lookup table inside the call, which costs it several
- * confirmations, so this request gets a much longer deadline than a quote.
  */
 export async function buildCookieboxSwap(args: {
   inputMint: string;
@@ -193,16 +208,42 @@ export async function buildCookieboxSwap(args: {
   rawAmount: string;
   owner: string;
   slippageBps?: number;
-}): Promise<BuiltSwap> {
-  return fetchJson<BuiltSwap>(`${COOKIEBOX_AGG_API}/swap-tx`, {
+}): Promise<BuiltSwap & { blockhash?: string; lastValidBlockHeight?: number }> {
+  return fetchJson<BuiltSwap & { blockhash?: string; lastValidBlockHeight?: number }>(
+    `${COOKIEBOX_AGG_API}/swap-tx`,
+    {
+      method: "POST",
+      timeoutMs: BUILD_TIMEOUT_MS,
+      body: JSON.stringify({
+        inputMint: args.inputMint,
+        outputMint: args.outputMint,
+        amount: args.rawAmount,
+        slippageBps: args.slippageBps ?? DEFAULT_SLIPPAGE_BPS,
+        owner: args.owner,
+      }),
+    },
+  );
+}
+
+/** Candy Shop builds from the route it quoted, handed back unchanged. */
+async function buildCandyShopSwap(route: unknown, owner: string): Promise<BuiltSwap> {
+  return fetchJson<BuiltSwap>(`${CANDYSHOP_API}/swap-tx/multi-route`, {
     method: "POST",
-    timeoutMs: 60_000,
-    body: JSON.stringify({
-      inputMint: args.inputMint,
-      outputMint: args.outputMint,
-      amount: args.rawAmount,
-      slippageBps: args.slippageBps ?? DEFAULT_SLIPPAGE_BPS,
-      owner: args.owner,
-    }),
+    timeoutMs: BUILD_TIMEOUT_MS,
+    body: JSON.stringify({ multiRoute: route, userPublicKey: owner }),
+  });
+}
+
+/**
+ * Build whichever quote won. Each aggregator builds its own route: handing a Cookiebox route to
+ * Candy Shop, or the reverse, would ask one router to execute a path the other found.
+ */
+export async function buildSwapTransaction(quote: SwapQuote, owner: string): Promise<BuiltSwap> {
+  if (quote.aggregator === "candyshop") return buildCandyShopSwap(quote.route, owner);
+  return buildCookieboxSwap({
+    inputMint: quote.inputMint,
+    outputMint: quote.outputMint,
+    rawAmount: quote.inAmount,
+    owner,
   });
 }

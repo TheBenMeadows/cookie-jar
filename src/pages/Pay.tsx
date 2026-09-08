@@ -39,6 +39,10 @@ interface Resolved {
 export function Pay({ payload }: { payload: string }): JSX.Element {
   const { publicKey, sendTransaction, connected } = useWallet();
   const connection = useMemo(() => getConnection(), []);
+  const origin = useMemo(
+    () => window.location.origin + window.location.pathname.replace(/index\.html$/, ""),
+    [],
+  );
 
   const [request, setRequest] = useState<PaymentRequest | null>(null);
   const [resolved, setResolved] = useState<Resolved | null>(null);
@@ -49,6 +53,8 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   const [signature, setSignature] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  /** Bumped after a swap so the balance below the amount is re-read. */
+  const [balanceEpoch, setBalanceEpoch] = useState(0);
 
   const decimals = request ? tokenDecimals(request) : COOK_DECIMALS;
   const symbol = request ? tokenSymbol(request) : COOK_SYMBOL;
@@ -100,7 +106,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
     return () => {
       live = false;
     };
-  }, [publicKey, request, connection, stage]);
+  }, [publicKey, request, connection, stage, balanceEpoch]);
 
   /** The amount this payment will actually move, in base units. */
   const rawAmount = useMemo((): bigint | null => {
@@ -219,11 +225,9 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
           The memo on this transaction is what puts it in the jar's history. Anyone can read it back
           from the chain, with or without this app.
         </p>
-        <div className="buttons">
-          <a className="quiet" href={jarUrl(request.to, "")} style={{ textDecoration: "none" }}>
-            <button className="quiet">See the jar</button>
-          </a>
-        </div>
+        <p>
+          <a href={jarUrl(request.to, origin)}>See this jar's history</a>
+        </p>
       </>
     );
   }
@@ -338,7 +342,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
           targetDecimals={decimals}
           targetSymbol={symbol}
           shortfallRaw={shortfall}
-          onSwapped={() => setStage((s) => (s === "ready" ? "ready" : s))}
+          onSwapped={() => setBalanceEpoch((e) => e + 1)}
         />
       )}
 

@@ -17,6 +17,9 @@ export const CANDYSHOP_API = envUrl("VITE_CANDYSHOP_API_URL", "https://swap.cook
 
 export const EXPLORER_URL = envUrl("VITE_COOKIE_EXPLORER_URL", "https://cookiescan.io");
 
+/** Where the source lives. Set `VITE_REPO_URL` at build time once the repository exists. */
+export const REPO_URL = envUrl("VITE_REPO_URL", "https://github.com/TheBenMeadows/cookie-jar");
+
 /**
  * Where a payer without COOK goes to get some: the Hyperlane warp route between Solana mainnet and
  * Cookie Chain. This is the address the cookiechain.wtf ecosystem page links as "Bridge"; it

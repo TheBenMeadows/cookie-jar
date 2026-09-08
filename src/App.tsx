@@ -2,7 +2,7 @@ import { ConnectionProvider, WalletProvider } from "@solana/wallet-adapter-react
 import { useMemo } from "react";
 
 import { WalletBar } from "./components/WalletBar";
-import { EXPLORER_URL, RPC_URL, WS_URL } from "./lib/config";
+import { EXPLORER_URL, REPO_URL, RPC_URL, WS_URL } from "./lib/config";
 import { About } from "./pages/About";
 import { Create } from "./pages/Create";
 import { Jar } from "./pages/Jar";
@@ -58,8 +58,7 @@ export function App(): JSX.Element {
             </p>
             <p>
               RPC {new URL(RPC_URL).host} · explorer{" "}
-              <a href={EXPLORER_URL}>{new URL(EXPLORER_URL).host}</a> · source{" "}
-              <a href="https://github.com/">GitHub</a>
+              <a href={EXPLORER_URL}>{new URL(EXPLORER_URL).host}</a> · <a href={REPO_URL}>source</a>
             </p>
           </footer>
         </div>

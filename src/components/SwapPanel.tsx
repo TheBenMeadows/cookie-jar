@@ -2,11 +2,11 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { getConnection } from "../lib/chain";
+import { getConnection, waitForSignature } from "../lib/chain";
 import { COOK_MINT, explorerTxUrl } from "../lib/config";
 import { fetchNativeBalance, fetchTokenHoldings, type Holding } from "../lib/balances";
 import { groupDigits, rawToUi, shortAddress, uiToRaw } from "../lib/format";
-import { bestSwapQuote, buildCookieboxSwap, type SwapQuote } from "../lib/swap";
+import { bestSwapQuote, buildSwapTransaction, type SwapQuote } from "../lib/swap";
 import { fetchToken } from "../lib/tokens";
 
 /**
@@ -119,12 +119,7 @@ export function SwapPanel(props: Props): JSX.Element {
     setError(null);
     setSwapping(true);
     try {
-      const built = await buildCookieboxSwap({
-        inputMint: quote.inputMint,
-        outputMint: quote.outputMint,
-        rawAmount: quote.inAmount,
-        owner: props.owner.toBase58(),
-      });
+      const built = await buildSwapTransaction(quote, props.owner.toBase58());
       const transaction = VersionedTransaction.deserialize(
         Uint8Array.from(atob(built.transactionBase64), (c) => c.charCodeAt(0)),
       );
@@ -139,14 +134,7 @@ export function SwapPanel(props: Props): JSX.Element {
       }
       const signed = await signTransaction(transaction);
       const sent = await connection.sendRawTransaction(signed.serialize());
-      await connection.confirmTransaction(
-        {
-          signature: sent,
-          blockhash: built.blockhash,
-          lastValidBlockHeight: built.lastValidBlockHeight,
-        },
-        "confirmed",
-      );
+      await waitForSignature(connection, sent);
       setSignature(sent);
       props.onSwapped();
     } catch (e: unknown) {

@@ -1,0 +1,132 @@
+# Cookie Jar
+
+Payment links and tip jars on Cookie Chain.
+
+Fill in a form and you get a short link and a QR code. Whoever opens it connects a wallet and pays you in COOK or any Cookie Chain token. Both sides get a receipt on chain, and the jar page lists every payment that has arrived.
+
+Cookie Jar has no backend. The payment request is carried inside the link, and the history is read back out of the chain.
+
+## Making a request and getting paid
+
+Create a request. Pick a recipient (a Cookie Chain address or a CookOven `.cook` name), a token, and an amount. The amount can be fixed in the token, fixed in US dollars, or left open for a tip jar. Add a label, a note and an invoice reference if you want them.
+
+Share the link. The request is encoded as base64url JSON in the URL fragment after `#/pay/`. A fragment is never sent to a server, so the request does not appear in this app's logs, in a CDN's, or in a referrer header. The same string is also rendered as a QR code.
+
+Get paid. The Pay page decodes the link, resolves the name against the CookOven registry, shows the amount and its dollar value, and builds one transaction. The payer's wallet signs it and sends it. A payer holding the wrong token can swap first, in the same page, through the Cookie Chain aggregators.
+
+Read the jar. The Jar page lists what arrived, totalled by token, with a link to each transaction on Cookiescan.
+
+## How it works on chain
+
+Every payment is one Cookie Chain transaction:
+
+- native COOK: a `SystemProgram.transfer`
+- an SPL token: a `TransferChecked`, preceded by an idempotent create for the recipient's associated token account when they do not have one
+- both: an SPL Memo instruction whose text starts with `cookiejar:1`
+
+The memo is what makes a jar readable. `Jar` calls `getSignaturesForAddress` on the recipient, fetches each transaction, keeps the ones whose memo starts with the prefix, and takes the amount from the transaction's own `preBalances`/`postBalances` and `preTokenBalances`/`postTokenBalances`. No indexer and no database are involved: any Solana RPC client pointed at Cookie Chain can rebuild the same list.
+
+A `.cook` name is read straight from the CookOven registry program. `resolveRecipient` derives the `["domain", label]` program address, reads the account, and decodes the owner. A name that is listed for sale on the `.cook` marketplace is refused rather than resolved. The registry then points it at the marketplace escrow, which is program-owned and has no signer, so paying it would send the money somewhere nobody can spend it.
+
+A dollar-quoted request is converted at the Cookiescan price when the payer opens the link, in the browser, and the token amount is shown before they sign. Nothing is pegged and nothing is escrowed. The conversion is fixed-point BigInt arithmetic throughout, because a COOK amount that fits an ordinary invoice already exceeds what a double holds at 9 decimals.
+
+The swap step asks both Cookie Chain aggregators for a route and keeps the larger output. Whichever one won then builds it (Cookiebox through `POST /swap-tx`, Candy Shop through `POST /swap-tx/multi-route`) and returns an unsigned versioned transaction whose fee payer is the payer's own wallet. Cookie Jar simulates it, the wallet signs it, and this page sends it. The funds never pass through the app, and the swap is a separate transaction from the payment, so a payer can stop after either one.
+
+Cookie Jar does not hold keys, does not take a fee, and does not deploy a program of its own.
+
+## Addresses and endpoints
+
+| What | Address or host |
+| --- | --- |
+| RPC | `https://rpc.cookiescan.io` |
+| Websocket | `wss://wss.cookiescan.io` |
+| Native COOK (wrapped mint) | `So11111111111111111111111111111111111111112` |
+| SPL Memo v2 | `MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr` |
+| CookOven `.cook` registry | `H43Qtq4AMQ86y7yc3YtCKZJ2QMhhnCcHyZKeFeoQn7PA` |
+| CookOven `.cook` marketplace | `Ey35mr69UfiQqZSwD2qYAZoMNfnuVJGCjwNSB64ppHm7` |
+| Prices, tokens, DAS | `https://api.cookiescan.io` |
+| Cookiebox aggregator | `https://agg.cookiebox.app` |
+| Candy Shop aggregator | `https://swap.cookiescan.io/api` |
+| Explorer | `https://cookiescan.io` |
+| COOK bridge from Solana | `https://bridge.cookiescan.io` |
+
+Cookie Jar deploys no program and owns no address. It reads and writes only through the programs above.
+
+## Setup
+
+Node 22 or later is required.
+
+```
+npm install
+npm run dev
+```
+
+The dev server prints a local URL. Open it, connect a wallet, and make a link.
+
+```
+npm run build      # typecheck, then a static bundle in dist/
+npm run preview    # serve dist/ locally
+npm test           # 25 unit and render tests, no network
+npm run live       # 16 checks against the live chain, no key, no funds
+npm run lint
+```
+
+## Environment variables
+
+Every one is optional. The defaults are the public Cookie Chain endpoints, and the app runs with no `.env` file at all.
+
+| Variable | Default |
+| --- | --- |
+| `VITE_COOKIE_RPC_URL` | `https://rpc.cookiescan.io` |
+| `VITE_COOKIE_WS_URL` | `wss://wss.cookiescan.io` |
+| `VITE_COOKIESCAN_API_URL` | `https://api.cookiescan.io` |
+| `VITE_COOKIEBOX_AGG_URL` | `https://agg.cookiebox.app` |
+| `VITE_CANDYSHOP_API_URL` | `https://swap.cookiescan.io/api` |
+| `VITE_COOKIE_EXPLORER_URL` | `https://cookiescan.io` |
+| `VITE_REPO_URL` | this repository |
+
+Set a private RPC through `VITE_COOKIE_RPC_URL` if the public one rate-limits you. No variable holds a secret. The app never sees a key.
+
+## Deploying
+
+The build is a directory of static files. Routing is in the URL fragment, so any file host serves it as it stands, with no rewrite rules and no environment secrets.
+
+On Cloudflare Pages:
+
+- build command: `npm run build`
+- build output directory: `dist`
+- Node version: 22 or later
+
+Any other static host works the same way. Upload `dist/`.
+
+## The live checks
+
+`npm run live` runs 16 checks against Cookie Chain and the ecosystem APIs. It signs nothing and sends nothing, so it runs without a key and without funds. It covers the link round-trip, `.cook` resolution for a registered and an unregistered name, the dollar quote, the token registry, a COOK transfer, an SPL transfer, both aggregators, a built swap transaction, and the jar history read.
+
+The transfer checks run twice over. Once as a real holder with signature verification off, which proves the transaction is valid end to end. Once as a freshly generated keypair, which must fail with `AccountNotFound` and nothing else. An address that has never held COOK has no account on chain, so that error is the whole of what is wrong, and it proves the rest of the transaction is well formed.
+
+## The funded end-to-end test
+
+The checks above never move money. To confirm a real payment, one funded wallet is needed.
+
+1. Bridge a small amount of COOK from Solana at `https://bridge.cookiescan.io`. A payment costs 0.000005 COOK in fees, so a dollar of COOK covers thousands of them; the amount to bridge is set by what you want to send, not by the fee.
+2. Open the app, connect that wallet, and make a link paying a second address a small amount of COOK.
+3. Open the link in another browser or another profile, connect the funded wallet, and pay.
+4. Read the signature on the receipt against `https://cookiescan.io/tx/<signature>`, and confirm the transaction contains an SPL Memo instruction whose text starts with `cookiejar:1`.
+5. Open the jar page for the recipient. The payment must appear with the right amount, note and reference.
+
+Step 5 is the one that matters. It proves the history is rebuilt from chain data with nothing stored anywhere.
+
+## Known limits
+
+A jar reads the recipient's recent signatures, so a very busy address shows only its recent Cookie Jar payments. Raise the limit in `fetchJarHistory` or page the signatures if that matters.
+
+A transfer to a jar's address without a Cookie Jar memo is left out. A jar lists Cookie Jar payments. Read the address on Cookiescan for a full account statement.
+
+The swap step seeds its input amount from the two Cookiescan prices plus 3% headroom, because both aggregators quote exact-in rather than exact-out. The quote below the field is what the router actually offers, and the payer can change the number and re-quote.
+
+`npm audit` reports advisories in `bigint-buffer` and in the React Native packages that `@solana/wallet-adapter-react` pulls in for mobile wallet support. Both come from the Solana dependency tree and neither has a fix that does not break the SDK.
+
+## Licence
+
+MIT.
