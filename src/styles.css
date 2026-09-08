@@ -1,0 +1,499 @@
+/*
+ * Cookie Jar reads as a paper receipt: warm stock, one ink, hard rules, and figures large enough to
+ * check at arm's length. A payment tool earns trust by being legible, so there are no gradients, no
+ * shadows and no decorative colour — the single accent marks a payment that landed, and nothing else.
+ */
+
+:root {
+  --paper: #f4f1e9;
+  --paper-sunk: #e9e4d7;
+  --ink: #16140f;
+  --ink-soft: #5c574b;
+  --rule: #16140f;
+  --rule-faint: #cdc6b4;
+  --stamp: #14663f;
+  --alarm: #98301f;
+
+  --sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --sheet: 34rem;
+  --gap: 1rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #14130f;
+    --paper-sunk: #1e1c16;
+    --ink: #f1eee5;
+    --ink-soft: #9a9483;
+    --rule: #f1eee5;
+    --rule-faint: #3b382f;
+    --stamp: #59b285;
+    --alarm: #e0705c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+
+a {
+  color: inherit;
+  text-underline-offset: 0.2em;
+}
+
+/* --- Frame ------------------------------------------------------------------------------------ */
+
+.page {
+  max-width: var(--sheet);
+  margin: 0 auto;
+  padding: 0 1.25rem 4rem;
+}
+
+.masthead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 0 0.75rem;
+  border-bottom: 2px solid var(--rule);
+}
+
+.wordmark {
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.wordmark span {
+  font-weight: 400;
+}
+
+.nav {
+  display: flex;
+  gap: 1rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--rule-faint);
+  font-size: 0.8125rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.nav a {
+  color: var(--ink-soft);
+  text-decoration: none;
+}
+
+.nav a[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.sheet {
+  padding: 1.75rem 0 0;
+}
+
+h1 {
+  margin: 1.5rem 0 0.25rem;
+  font-size: 1.5rem;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  margin: 2rem 0 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+p {
+  margin: 0 0 1rem;
+}
+
+.lede {
+  color: var(--ink-soft);
+  margin-bottom: 1.75rem;
+}
+
+.small {
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Rules ------------------------------------------------------------------------------------ */
+
+.rule {
+  border: 0;
+  border-top: 2px solid var(--rule);
+  margin: 1.5rem 0;
+}
+
+/* The perforation: where the request ends and the receipt begins. */
+.perf {
+  border: 0;
+  border-top: 2px dashed var(--rule-faint);
+  margin: 1.75rem 0;
+}
+
+/* --- Fields ----------------------------------------------------------------------------------- */
+
+.field {
+  display: block;
+  margin-bottom: 1.25rem;
+}
+
+/* The caption. `.hint` is also a direct child and keeps its own sentence-case styling. */
+.field > span:not(.hint) {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 0.35rem;
+}
+
+.choices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.choices label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+
+.choices input {
+  accent-color: var(--ink);
+}
+
+.results {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  border-top: 1px solid var(--rule-faint);
+  max-height: 15rem;
+  overflow-y: auto;
+}
+
+.results li {
+  border-bottom: 1px solid var(--rule-faint);
+}
+
+.results button {
+  width: 100%;
+  border: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  text-align: left;
+}
+
+.results button[aria-pressed="true"] {
+  font-weight: 700;
+}
+
+.results .ticker {
+  font-weight: 700;
+  min-width: 5rem;
+}
+
+.results .addr {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+
+input[type="text"],
+input[type="search"],
+textarea,
+select {
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper-sunk);
+  border: 1px solid var(--rule-faint);
+  border-radius: 0;
+  padding: 0.65rem 0.7rem;
+  appearance: none;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+textarea {
+  min-height: 4.5rem;
+  resize: vertical;
+}
+
+.hint {
+  display: block;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+  margin-top: 0.3rem;
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 1rem;
+}
+
+@media (max-width: 26rem) {
+  .pair {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- Buttons ---------------------------------------------------------------------------------- */
+
+button {
+  font: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 2px solid var(--rule);
+  border-radius: 0;
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.primary {
+  width: 100%;
+  background: var(--ink);
+  color: var(--paper);
+  font-weight: 700;
+  padding: 0.9rem 1rem;
+  font-size: 1.0625rem;
+}
+
+.quiet {
+  border-width: 1px;
+  border-color: var(--rule-faint);
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8125rem;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* --- Ledger rows ------------------------------------------------------------------------------ */
+
+.rows {
+  border-top: 1px solid var(--rule-faint);
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--rule-faint);
+}
+
+.row dt,
+.row .k {
+  font-size: 0.8125rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.row dd,
+.row .v {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* --- The amount ------------------------------------------------------------------------------- */
+
+.amount {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(1.9rem, 9vw, 2.75rem);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0.75rem 0 0.25rem;
+}
+
+.amount .unit {
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.usd {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 1.25rem;
+}
+
+/* --- Status ----------------------------------------------------------------------------------- */
+
+.stamp {
+  display: inline-block;
+  border: 2px solid var(--stamp);
+  color: var(--stamp);
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  font-size: 0.8125rem;
+  padding: 0.3rem 0.7rem;
+}
+
+.alarm {
+  border-left: 3px solid var(--alarm);
+  padding: 0.6rem 0 0.6rem 0.75rem;
+  color: var(--alarm);
+  margin: 1rem 0;
+}
+
+.working {
+  color: var(--ink-soft);
+}
+
+/* --- QR --------------------------------------------------------------------------------------- */
+
+.qr {
+  display: block;
+  width: 100%;
+  max-width: 15rem;
+  margin: 1rem auto;
+  image-rendering: pixelated;
+  background: #fff;
+  padding: 0.75rem;
+  border: 1px solid var(--rule-faint);
+}
+
+.linkbox {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.linkbox input {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+/* --- Wallet picker ---------------------------------------------------------------------------- */
+
+.picker {
+  border: 2px solid var(--rule);
+  padding: 1rem;
+  margin: 1rem 0;
+  background: var(--paper);
+}
+
+.picker ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.picker li + li {
+  border-top: 1px solid var(--rule-faint);
+}
+
+.picker button {
+  width: 100%;
+  border: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.65rem 0;
+  text-align: left;
+}
+
+.picker img {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.picker .installed {
+  margin-left: auto;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* --- Foot ------------------------------------------------------------------------------------- */
+
+.foot {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 2px solid var(--rule);
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+.foot a {
+  color: var(--ink-soft);
+}
+
+ul.plain {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}

@@ -169,3 +169,40 @@ export async function bestSwapQuote(args: {
   if (quotes.length === 0) return null;
   return quotes.reduce((best, q) => (BigInt(q.outAmount) > BigInt(best.outAmount) ? q : best));
 }
+
+// --- Executing a swap -----------------------------------------------------------------------------
+
+export interface BuiltSwap {
+  /** An unsigned v0 transaction, fee payer already set to `owner`. */
+  transactionBase64: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+}
+
+/**
+ * Ask Cookiebox to build the swap. It re-quotes server-side and answers with an unsigned versioned
+ * transaction whose fee payer is the payer's own wallet: Cookie Jar never holds the funds, never
+ * signs, and never sees a key. The caller simulates it, has the wallet sign it, and sends it.
+ *
+ * `/swap-tx` may extend the aggregator's lookup table inside the call, which costs it several
+ * confirmations, so this request gets a much longer deadline than a quote.
+ */
+export async function buildCookieboxSwap(args: {
+  inputMint: string;
+  outputMint: string;
+  rawAmount: string;
+  owner: string;
+  slippageBps?: number;
+}): Promise<BuiltSwap> {
+  return fetchJson<BuiltSwap>(`${COOKIEBOX_AGG_API}/swap-tx`, {
+    method: "POST",
+    timeoutMs: 60_000,
+    body: JSON.stringify({
+      inputMint: args.inputMint,
+      outputMint: args.outputMint,
+      amount: args.rawAmount,
+      slippageBps: args.slippageBps ?? DEFAULT_SLIPPAGE_BPS,
+      owner: args.owner,
+    }),
+  });
+}

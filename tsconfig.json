@@ -18,5 +18,5 @@
     "noUncheckedIndexedAccess": true,
     "types": ["node", "vite/client"]
   },
-  "include": ["src", "scripts", "vite.config.ts", "eslint.config.js"]
+  "include": ["src", "scripts", "vite.config.ts", "vitest.config.ts", "vitest.setup.ts", "eslint.config.js"]
 }

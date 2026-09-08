@@ -11,7 +11,7 @@
  *
  * Run: `npm run live`
  */
-import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram, VersionedTransaction } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
 import { getConnection } from "../src/lib/chain";
@@ -22,7 +22,7 @@ import { fetchJarHistory } from "../src/lib/history";
 import { buildPayment, simulatePayment } from "../src/lib/pay";
 import { usdToRaw } from "../src/lib/quote";
 import { buildMemo, decodeRequest, encodeRequest, parseMemo, type PaymentRequest } from "../src/lib/request";
-import { bestSwapQuote } from "../src/lib/swap";
+import { bestSwapQuote, buildCookieboxSwap } from "../src/lib/swap";
 import { fetchCookPriceUsd, fetchToken, searchTokens } from "../src/lib/tokens";
 
 const connection = getConnection();
@@ -281,6 +281,34 @@ async function main(): Promise<void> {
       "the quote's minimum out is larger than its expected out",
     );
     return `${quote?.aggregator}: 1,000 TRASHCOIN → ${rawToUi(BigInt(quote?.outAmount ?? "0"), COOK_DECIMALS)} ${COOK_SYMBOL} via ${quote?.venues.join(" → ")}`;
+  });
+
+  await check("swap transaction builds and simulates", async () => {
+    const mint = new PublicKey(TRASHCOIN_MINT);
+    const holder = await findTokenHolder(mint);
+    const rawAmount = holder.raw / 1000n > 0n ? holder.raw / 1000n : 1n;
+    const built = await buildCookieboxSwap({
+      inputMint: TRASHCOIN_MINT,
+      outputMint: COOK_MINT,
+      rawAmount: rawAmount.toString(),
+      owner: holder.owner.toBase58(),
+    });
+    const transaction = VersionedTransaction.deserialize(
+      new Uint8Array(Buffer.from(built.transactionBase64, "base64")),
+    );
+    assert(
+      transaction.message.staticAccountKeys[0]?.toBase58() === holder.owner.toBase58(),
+      "the aggregator built a transaction whose fee payer is not the swapper",
+    );
+    const simulation = await connection.simulateTransaction(transaction, {
+      replaceRecentBlockhash: true,
+      sigVerify: false,
+    });
+    assert(
+      !simulation.value.err,
+      `the swap did not simulate: ${JSON.stringify(simulation.value.err)} ${simulation.value.logs?.slice(-3).join(" | ")}`,
+    );
+    return `cookiebox built and simulated a ${rawToUi(rawAmount, holder.decimals)} TRASHCOIN → ${COOK_SYMBOL} swap for ${holder.owner.toBase58()}, unsigned, fee payer is the swapper`;
   });
 
   await check("jar history reads from chain", async () => {

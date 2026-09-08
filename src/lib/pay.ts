@@ -1,3 +1,4 @@
+import { Buffer } from "buffer";
 import {
   ComputeBudgetProgram,
   PublicKey,
@@ -56,6 +57,9 @@ export interface BuiltPayment {
   createsRecipientAccount: boolean;
   /** The SPL token program that owns the mint, or null for a native COOK payment. */
   tokenProgramId: PublicKey | null;
+  /** Carried out so the caller can confirm against the same blockhash the transaction was built on. */
+  blockhash: string;
+  lastValidBlockHeight: number;
 }
 
 /** Which token program owns this mint — Token or Token-2022. Both exist on Cookie Chain. */
@@ -133,10 +137,16 @@ export async function buildPayment(args: BuildPaymentArgs): Promise<BuiltPayment
   transaction.add(memoInstruction(memo, payer));
   transaction.feePayer = payer;
 
-  const { blockhash } = await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
   transaction.recentBlockhash = blockhash;
 
-  return { transaction, createsRecipientAccount, tokenProgramId };
+  return {
+    transaction,
+    createsRecipientAccount,
+    tokenProgramId,
+    blockhash,
+    lastValidBlockHeight,
+  };
 }
 
 export interface SimulationOutcome {
