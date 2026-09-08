@@ -28,6 +28,7 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [reloadCount, setReloadCount] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [addressCopied, setAddressCopied] = useState(false);
   const [resolvedSymbols, setResolvedSymbols] = useState<Record<string, string>>({});
 
   const origin = useMemo(
@@ -113,6 +114,14 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
     };
   }, [totals, payments, resolvedSymbols]);
 
+  const handleCopyAddress = useCallback(() => {
+    if (!resolved) return;
+    void navigator.clipboard.writeText(resolved.address.toBase58()).then(() => {
+      setAddressCopied(true);
+      setTimeout(() => setAddressCopied(false), 2000);
+    });
+  }, [resolved]);
+
   const handleCopyShareUrl = useCallback(() => {
     const shareUrl = jarUrl(recipient, origin);
     void navigator.clipboard.writeText(shareUrl);
@@ -168,8 +177,13 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
   return (
     <>
       <h1>{headerTitle}</h1>
-      <p className="small mono">
-        <a href={explorerAddressUrl(addressBase58)}>{addressBase58}</a>
+      <p className="small">
+        <a className="mono" href={explorerAddressUrl(addressBase58)}>
+          {shortAddress(addressBase58, 8, 6)}
+        </a>{" "}
+        <button className="link" type="button" onClick={handleCopyAddress}>
+          {addressCopied ? "copied" : "copy the full key"}
+        </button>
       </p>
 
       {totals.map((t) => (
@@ -234,11 +248,6 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
       </div>
       <Qr value={shareUrl} alt="QR code for this jar" />
 
-      <div className="buttons">
-        <button type="button" className="quiet" onClick={() => setReloadCount((c) => c + 1)}>
-          Reload
-        </button>
-      </div>
     </>
   );
 }

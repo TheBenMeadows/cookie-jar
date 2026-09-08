@@ -3,6 +3,7 @@ import { PublicKey } from "@solana/web3.js";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { SwapPanel } from "../components/SwapPanel";
+import { WalletPicker } from "../components/WalletPicker";
 import { getConnection } from "../lib/chain";
 import {
   BRIDGE_URL,
@@ -18,6 +19,7 @@ import { resolveRecipient } from "../lib/domains";
 import {
   displayAmount,
   formatUsd,
+  groupDigits,
   isRounded,
   rawToUi,
   shortAddress,
@@ -44,7 +46,7 @@ interface Resolved {
 }
 
 export function Pay({ payload }: { payload: string }): JSX.Element {
-  const { publicKey, sendTransaction, connected } = useWallet();
+  const { publicKey, sendTransaction, connected, disconnect } = useWallet();
   const connection = useMemo(() => getConnection(), []);
   const origin = useMemo(
     () => window.location.origin + window.location.pathname.replace(/index\.html$/, ""),
@@ -62,6 +64,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   const [warning, setWarning] = useState<string | null>(null);
   /** Bumped after a swap so the balance below the amount is re-read. */
   const [balanceEpoch, setBalanceEpoch] = useState(0);
+  const [picking, setPicking] = useState(false);
 
   const decimals = request ? tokenDecimals(request) : COOK_DECIMALS;
   const symbol = request ? tokenSymbol(request) : COOK_SYMBOL;
@@ -140,10 +143,9 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
    */
   const payBlocker = useMemo((): string | null => {
     if (!resolved) return "This link's recipient does not resolve";
-    if (!connected) return "Connect a wallet to pay";
     if (stage === "sending") return "Waiting for your wallet…";
     if (rawAmount === null) return "Enter an amount";
-    if (shortfall !== null) return `You need more ${symbol} than this wallet holds`;
+    if (connected && shortfall !== null) return `You need more ${symbol} than this wallet holds`;
     return null;
   }, [resolved, connected, stage, rawAmount, shortfall, symbol]);
 
@@ -260,14 +262,17 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
 
       {isOpenAmount(request) ? (
         <label className="field">
-          <span>Amount in {symbol}</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={enteredAmount}
-            onChange={(e) => setEnteredAmount(e.target.value)}
-            placeholder="0"
-          />
+          <span>Amount</span>
+          <div className="with-unit">
+            <input
+              type="text"
+              inputMode="decimal"
+              value={enteredAmount}
+              onChange={(e) => setEnteredAmount(e.target.value)}
+              placeholder="any amount"
+            />
+            <span className="unit">{symbol}</span>
+          </div>
           {usdValue !== null && <span className="hint">{formatUsd(usdValue)}</span>}
         </label>
       ) : (
@@ -282,6 +287,9 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
               : usdValue !== null
                 ? formatUsd(usdValue)
                 : ""}
+            {rawAmount !== null && isRounded(rawAmount, decimals)
+              ? ` · exactly ${groupDigits(rawToUi(rawAmount, decimals))} ${symbol}`
+              : ""}
           </p>
         </>
       )}
@@ -303,24 +311,10 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
             )}
           </dd>
         </div>
-        {resolved?.name && (
-          <div className="row">
-            <dt>Address</dt>
-            <dd className="mono">{shortAddress(resolved.address.toBase58(), 8, 6)}</dd>
-          </div>
-        )}
         <div className="row">
           <dt>Token</dt>
           <dd className="mono">{mint === COOK_MINT ? `${COOK_SYMBOL} (native)` : shortAddress(mint, 8, 6)}</dd>
         </div>
-        {rawAmount !== null && isRounded(rawAmount, decimals) && (
-          <div className="row">
-            <dt>Exact amount</dt>
-            <dd className="mono tabular">
-              {rawToUi(rawAmount, decimals)} {symbol}
-            </dd>
-          </div>
-        )}
         {request.ref && (
           <div className="row">
             <dt>Reference</dt>
@@ -345,15 +339,29 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
 
       {error && <p className="alarm">{error}</p>}
 
-      {!connected && resolved && (
-        <p className="small">Nightly is Cookie Chain's own wallet: nightly.app</p>
-      )}
-
       <p>
-        <button className="primary" disabled={payBlocker !== null} onClick={() => void pay()}>
-          {payBlocker ?? `Pay ${displayAmount(rawAmount ?? 0n, decimals)} ${symbol}`}
+        <button
+          className="primary"
+          disabled={payBlocker !== null}
+          onClick={() => (connected ? void pay() : setPicking(true))}
+        >
+          {payBlocker ??
+            (connected
+              ? `Pay ${displayAmount(rawAmount ?? 0n, decimals)} ${symbol}`
+              : "Connect a wallet to pay")}
         </button>
       </p>
+
+      {picking && !connected && <WalletPicker onPicked={() => setPicking(false)} />}
+
+      {connected && publicKey && (
+        <p className="small">
+          Paying from <span className="mono">{shortAddress(publicKey.toBase58())}</span> ·{" "}
+          <button className="link" onClick={() => void disconnect()}>
+            use another wallet
+          </button>
+        </p>
+      )}
 
       {shortfall !== null && rawAmount !== null && publicKey && (
         <SwapPanel

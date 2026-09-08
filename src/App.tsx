@@ -2,12 +2,13 @@ import { ConnectionProvider, WalletProvider } from "@solana/wallet-adapter-react
 import { useMemo } from "react";
 
 import { WalletBar } from "./components/WalletBar";
+import { useConnectOnSelect } from "./components/WalletPicker";
 import { EXPLORER_URL, REPO_URL, RPC_URL, WS_URL } from "./lib/config";
 import { About } from "./pages/About";
 import { Create } from "./pages/Create";
 import { Jar } from "./pages/Jar";
 import { Pay } from "./pages/Pay";
-import { useRoute } from "./router";
+import { useRoute, type Route } from "./router";
 
 function Body(): JSX.Element {
   const route = useRoute();
@@ -33,12 +34,28 @@ export function App(): JSX.Element {
   return (
     <ConnectionProvider endpoint={RPC_URL} config={{ commitment: "confirmed", wsEndpoint: WS_URL }}>
       <WalletProvider wallets={wallets} autoConnect>
+        <Shell route={route} />
+      </WalletProvider>
+    </ConnectionProvider>
+  );
+}
+
+/**
+ * Inside the wallet provider, so the connect effect can reach it. The Pay page carries its own
+ * connect action, which is the only thing that screen is for, so the header control is left off
+ * there rather than offering the same thing twice.
+ */
+function Shell({ route }: { route: Route }): JSX.Element {
+  useConnectOnSelect();
+  const onPayPage = route.name === "pay";
+
+  return (
         <div className="page">
           <header className="masthead">
             <a className="wordmark" href="#/">
               Cookie<span> Jar</span>
             </a>
-            <WalletBar />
+            {!onPayPage && <WalletBar />}
           </header>
           <nav className="nav">
             <a href="#/" aria-current={route.name === "create" ? "page" : undefined}>
@@ -62,7 +79,5 @@ export function App(): JSX.Element {
             </p>
           </footer>
         </div>
-      </WalletProvider>
-    </ConnectionProvider>
   );
 }

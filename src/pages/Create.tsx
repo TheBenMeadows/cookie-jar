@@ -428,11 +428,7 @@ export function Create(): JSX.Element {
             <a href={jarUrl(recipient.trim(), origin)}>See this jar's history</a>
           </p>
         </>
-      ) : (
-        <p className="small waiting">
-          The link and its QR code appear here once the form is filled in.
-        </p>
-      )}
+      ) : null}
         </div>
       </div>
     </>
