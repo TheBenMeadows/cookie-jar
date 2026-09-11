@@ -31,7 +31,8 @@ interface TokenBalance {
 
 interface TxOpts {
   signature: string;
-  memo: string;
+  memo?: string;
+  memos?: string[];
   /** Account keys in order; index 0 is the fee payer. */
   keys: PublicKey[];
   preBalances?: number[];
@@ -50,13 +51,14 @@ function parsedTx(o: TxOpts): unknown {
     uiTokenAmount: { amount: b.amount, decimals: 9, uiAmount: 0, uiAmountString: b.amount },
   });
   const zeros = o.keys.map(() => 0);
+  const memos = o.memos ?? (o.memo !== undefined ? [o.memo] : []);
   return {
     blockTime: o.blockTime === undefined ? 1_760_000_000 : o.blockTime,
     transaction: {
       signatures: [o.signature],
       message: {
         accountKeys: o.keys.map((pubkey) => ({ pubkey, signer: false, writable: true })),
-        instructions: [{ programId: MEMO_PROGRAM_ID, parsed: o.memo }],
+        instructions: memos.map((parsed) => ({ programId: MEMO_PROGRAM_ID, parsed })),
       },
     },
     meta: {
@@ -454,5 +456,95 @@ describe("a jar with more payments than the page asks for", () => {
     expect(history.payments).toHaveLength(1);
     expect(history.stoppedAtLimit).toBe(false);
     expect(history.hitCap).toBe(false);
+  });
+});
+
+describe("transactions with multiple memo instructions", () => {
+  it("lists a transaction whose real memo follows a relayer memo", async () => {
+    const signatures = [entry("sig-prepended", 0)];
+    const transactions = {
+      "sig-prepended": parsedTx({
+        signature: "sig-prepended",
+        memos: ["sent from SomeWallet", "cookiejar:1|INV-9|a real payment"],
+        keys: [SENDER, JAR],
+        preBalances: [10_000_000, 0],
+        postBalances: [9_000_000, 1_000_000],
+      }),
+    };
+
+    const history = await fetchJarHistory(
+      connectionFor({ signatures: { [JAR.toBase58()]: signatures }, transactions }),
+      JAR,
+      50,
+    );
+
+    expect(history.payments).toHaveLength(1);
+    expect(history.payments[0]?.ref).toBe("INV-9");
+  });
+
+  it("does not list a transaction whose only memo is from a third party", async () => {
+    const signatures = [
+      {
+        signature: "sig-thirdparty",
+        err: null,
+        memo: "[0] sent from SomeWallet",
+        blockTime: 1_760_000_000,
+        slot: 1_000,
+      },
+    ];
+    const transactions = {
+      "sig-thirdparty": parsedTx({
+        signature: "sig-thirdparty",
+        memos: ["sent from SomeWallet"],
+        keys: [SENDER, JAR],
+        preBalances: [10_000_000, 0],
+        postBalances: [9_000_000, 1_000_000],
+      }),
+    };
+
+    const history = await fetchJarHistory(
+      connectionFor({ signatures: { [JAR.toBase58()]: signatures }, transactions }),
+      JAR,
+      50,
+    );
+
+    expect(history.payments).toHaveLength(0);
+  });
+});
+
+describe("concurrency of signature queries across many accounts", () => {
+  it("caps parallel getSignaturesForAddress calls to PARALLEL_PAGES", async () => {
+    const accounts = Array.from({ length: 12 }, () => Keypair.generate().publicKey);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const queried = new Set<string>();
+
+    const connection = {
+      getTokenAccountsByOwner: vi.fn(async (_owner: PublicKey, filter: { programId: PublicKey }) => ({
+        value: filter.programId.equals(TOKEN_PROGRAM_ID)
+          ? accounts.map((pubkey) => ({
+              pubkey,
+              account: { data: Buffer.alloc(165) },
+            }))
+          : [],
+      })),
+      getSignaturesForAddress: vi.fn(async (address: PublicKey) => {
+        queried.add(address.toBase58());
+        inFlight += 1;
+        if (inFlight > maxInFlight) maxInFlight = inFlight;
+        await new Promise((r) => setTimeout(r, 0));
+        inFlight -= 1;
+        return [];
+      }),
+      getParsedTransactions: vi.fn(async () => []),
+    } as never;
+
+    await fetchJarHistory(connection, JAR, 40);
+
+    expect(maxInFlight).toBeLessThanOrEqual(6);
+    expect(queried.size).toBe(13); // jar + 12 token accounts
+    for (const acc of [JAR, ...accounts]) {
+      expect(queried.has(acc.toBase58())).toBe(true);
+    }
   });
 });

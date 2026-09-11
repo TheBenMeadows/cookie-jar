@@ -9,6 +9,7 @@ import {
   isOpenAmount,
   parseMemo,
   RequestError,
+  normalizeRequest,
   tokenDecimals,
   validateRecipient,
 } from "./request";
@@ -175,5 +176,27 @@ describe("memos", () => {
   it("ignores a memo written by something else", () => {
     expect(parseMemo("gm")).toBeNull();
     expect(parseMemo("cookiejar:2|a|b")).toBeNull();
+  });
+});
+
+describe("Unicode formatting characters in request fields", () => {
+  it("strips bidi overrides and zero-width characters", () => {
+    const withOverride = normalizeRequest({
+      to: "baker.cook",
+      label: "Refund \u202e00.1 KOOC",
+    });
+    expect(withOverride.label).toBe("Refund 00.1 KOOC");
+
+    const withZeroWidth = normalizeRequest({
+      to: "baker.cook",
+      note: "a\u200bb\ufeffc",
+    });
+    expect(withZeroWidth.note).toBe("abc");
+
+    const onlyFormatting = normalizeRequest({
+      to: "baker.cook",
+      label: "\u200b\u200d",
+    });
+    expect(onlyFormatting.label).toBeUndefined();
   });
 });

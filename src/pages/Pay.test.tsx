@@ -17,6 +17,7 @@ const stubs = vi.hoisted(() => ({
   sendTransaction: vi.fn(async () => "5SzTvsSQDq1PJyS5dR9hxYyTHrTQPJn9pQeSCHbdVMpU"),
   confirmTransaction: vi.fn(async () => ({ value: { err: null as unknown } })),
   fetchToken: vi.fn(async () => null as { symbol: string; priceUsd: number | null } | null),
+  recipientAccountRent: vi.fn(async () => 0n),
 }));
 
 vi.mock("@solana/wallet-adapter-react", () => ({
@@ -38,6 +39,7 @@ vi.mock("../lib/chain", () => ({
 }));
 
 vi.mock("../lib/pay", () => ({
+  recipientAccountRent: stubs.recipientAccountRent,
   buildPayment: vi.fn(async () => ({
     transaction: {},
     createsRecipientAccount: false,
@@ -76,6 +78,7 @@ afterEach(() => {
   vi.clearAllMocks();
   stubs.fetchToken.mockResolvedValue(null);
   stubs.confirmTransaction.mockResolvedValue({ value: { err: null } });
+  stubs.recipientAccountRent.mockResolvedValue(0n);
 });
 
 describe("an amount the headline has to round", () => {
@@ -162,5 +165,44 @@ describe("a transaction that lands and fails on chain", () => {
 
     expect(await screen.findByText("Paid")).toBeDefined();
     expect(screen.queryByText("This payment failed on chain")).toBeNull();
+  });
+});
+
+describe("recipient token account rent in network fee row", () => {
+  it("renders extra rent fee when recipient token account does not exist", async () => {
+    stubs.recipientAccountRent.mockResolvedValue(2_039_280n);
+
+    const payload = encodeRequest({
+      to: RECIPIENT,
+      label: "Token Transfer",
+      amount: "50",
+      mint: TRASHCOIN,
+      decimals: 9,
+      symbol: "TRASH",
+    });
+    render(<Pay payload={payload} />);
+
+    expect(
+      await screen.findByText(/0\.00203928 COOK to open their token account/),
+    ).toBeDefined();
+  });
+
+  it("does not render extra rent fee when recipient token account exists", async () => {
+    stubs.recipientAccountRent.mockResolvedValue(0n);
+
+    const payload = encodeRequest({
+      to: RECIPIENT,
+      label: "Token Transfer",
+      amount: "50",
+      mint: TRASHCOIN,
+      decimals: 9,
+      symbol: "TRASH",
+    });
+    render(<Pay payload={payload} />);
+
+    await screen.findByText("Token Transfer");
+    expect(
+      screen.queryByText(/0\.00203928 COOK to open their token account/),
+    ).toBeNull();
   });
 });

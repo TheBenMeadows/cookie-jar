@@ -7,7 +7,13 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { COOK_MINT } from "./config";
-import { buildPayment, chooseSourceAccount, fetchMintFacts, PaymentError } from "./pay";
+import {
+  buildPayment,
+  chooseSourceAccount,
+  fetchMintFacts,
+  PaymentError,
+  recipientAccountRent,
+} from "./pay";
 import { bestSwapQuote, verifySwapTransaction, type SwapQuote } from "./swap";
 
 /**
@@ -152,6 +158,25 @@ describe("an SPL payment names the recipient's wallet", () => {
     const keys = built.transaction.compileMessage().accountKeys.map((k) => k.toBase58());
     expect(keys).toContain(RECIPIENT.toBase58());
     expect(built.createsRecipientAccount).toBe(true);
+  });
+});
+
+describe("the rent a payer spends opening the recipient's token account", () => {
+  const ata2022 = getAssociatedTokenAddressSync(MINT, RECIPIENT, true, TOKEN_2022_PROGRAM_ID);
+  const stub = (present: PublicKey | null) =>
+    ({
+      getAccountInfo: vi.fn(async (key: PublicKey) =>
+        present && key.equals(present) ? { owner: TOKEN_2022_PROGRAM_ID, data: Buffer.alloc(165) } : null,
+      ),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    }) as never;
+
+  it("is the rent-exempt minimum when the account exists under neither program", async () => {
+    expect(await recipientAccountRent(stub(null), MINT, RECIPIENT)).toBe(2_039_280n);
+  });
+
+  it("is zero when the account exists under Token-2022", async () => {
+    expect(await recipientAccountRent(stub(ata2022), MINT, RECIPIENT)).toBe(0n);
   });
 });
 

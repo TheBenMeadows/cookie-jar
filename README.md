@@ -66,7 +66,7 @@ The dev server prints a local URL. Open it, connect a wallet, and make a link.
 ```
 npm run build      # typecheck, then a static bundle in dist/
 npm run preview    # serve dist/ locally
-npm test           # 80 unit and render tests, no network
+npm test           # 88 unit and render tests, no network
 npm run live       # 19 checks against the live chain, no key, no funds
 npm run lint
 ```

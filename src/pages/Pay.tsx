@@ -25,7 +25,7 @@ import {
   shortAddress,
   uiToRaw,
 } from "../lib/format";
-import { buildPayment, simulatePayment } from "../lib/pay";
+import { buildPayment, recipientAccountRent, simulatePayment } from "../lib/pay";
 import { rawToUsd, usdToRaw } from "../lib/quote";
 import {
   buildMemo,
@@ -60,6 +60,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   const [registrySymbol, setRegistrySymbol] = useState<string | null>(null);
   const [enteredAmount, setEnteredAmount] = useState("");
   const [holding, setHolding] = useState<Holding | null>(null);
+  const [accountRent, setAccountRent] = useState<bigint | null>(null);
   const [stage, setStage] = useState<Stage>("reading");
   const [signature, setSignature] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -127,6 +128,24 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
       live = false;
     };
   }, [publicKey, request, connection, stage, balanceEpoch]);
+
+  useEffect(() => {
+    setAccountRent(null);
+    if (!resolved || !mint || mint === COOK_MINT) {
+      return;
+    }
+    let live = true;
+    recipientAccountRent(connection, new PublicKey(mint), resolved.address)
+      .then((rent) => {
+        if (live) setAccountRent(rent);
+      })
+      .catch(() => {
+        if (live) setAccountRent(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [resolved, mint, connection]);
 
   /** The amount this payment will actually move, in base units. */
   const rawAmount = useMemo((): bigint | null => {
@@ -406,7 +425,15 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
         <div className="row">
           <dt>Network fee</dt>
           <dd className="tabular">
-            {FEE_PER_SIGNATURE_COOK} {COOK_SYMBOL}
+            {accountRent !== null && accountRent > 0n ? (
+              <>
+                {FEE_PER_SIGNATURE_COOK} {COOK_SYMBOL} +{" "}
+                {displayAmount(accountRent, COOK_DECIMALS)} {COOK_SYMBOL} to open their
+                token account
+              </>
+            ) : (
+              `${FEE_PER_SIGNATURE_COOK} ${COOK_SYMBOL}`
+            )}
           </dd>
         </div>
         {holding !== null && (

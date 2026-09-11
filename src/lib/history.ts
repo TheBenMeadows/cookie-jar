@@ -31,24 +31,33 @@ export interface JarPayment {
 
 const BATCH = 25;
 
+/**
+ * Reads every Memo-program instruction in a transaction and returns the first memo that parses
+ * as a Cookie Jar payment. A wallet or relayer memo earlier in the transaction is ignored.
+ */
 function memoText(tx: ParsedTransactionWithMeta): string | null {
   const memoProgram = MEMO_PROGRAM_ID.toBase58();
   const instructions = [
     ...tx.transaction.message.instructions,
     ...(tx.meta?.innerInstructions ?? []).flatMap((i) => i.instructions),
   ];
+  const memos: string[] = [];
   for (const ix of instructions) {
     if (ix.programId.toBase58() !== memoProgram) continue;
-    if ("parsed" in ix && typeof ix.parsed === "string") return ix.parsed;
-    if ("data" in ix && typeof ix.data === "string") {
+    if ("parsed" in ix && typeof ix.parsed === "string") {
+      memos.push(ix.parsed);
+    } else if ("data" in ix && typeof ix.data === "string") {
       // The RPC parses Memo instructions into `parsed`, so this branch only runs against a node
       // whose parser is older than the memo program version in use. Undecoded data is base58.
       try {
-        return new TextDecoder().decode(bs58.decode(ix.data));
+        memos.push(new TextDecoder().decode(bs58.decode(ix.data)));
       } catch {
-        return null;
+        continue;
       }
     }
+  }
+  for (const memo of memos) {
+    if (parseMemo(memo)) return memo;
   }
   return null;
 }
@@ -107,6 +116,9 @@ function payerOf(tx: ParsedTransactionWithMeta): string | null {
 
 /** How many signatures a single `getSignaturesForAddress` call asks for. */
 const PAGE = 100;
+
+/** How many signature pages a single round requests at once. */
+const PARALLEL_PAGES = 6;
 
 /**
  * The point at which a jar stops digging, shared across every address it owns. A busy address can
@@ -207,14 +219,19 @@ export async function fetchJarHistory(
     const active = scans.filter((scan) => !scan.done && scan.found < limit);
     if (active.length === 0) break;
     const share = Math.max(1, Math.floor((SCAN_CAP - scanned) / active.length));
-    const pages = await Promise.all(
-      active.map((scan) =>
-        connection.getSignaturesForAddress(scan.address, {
-          limit: Math.min(PAGE, share),
-          ...(scan.before ? { before: scan.before } : {}),
-        }),
-      ),
-    );
+    const pages: (Awaited<ReturnType<Connection["getSignaturesForAddress"]>>)[] = [];
+    for (let i = 0; i < active.length; i += PARALLEL_PAGES) {
+      const slice = active.slice(i, i + PARALLEL_PAGES);
+      const slicePages = await Promise.all(
+        slice.map((scan) =>
+          connection.getSignaturesForAddress(scan.address, {
+            limit: Math.min(PAGE, share),
+            ...(scan.before ? { before: scan.before } : {}),
+          }),
+        ),
+      );
+      pages.push(...slicePages);
+    }
 
     for (const [i, page] of pages.entries()) {
       const scan = active[i];

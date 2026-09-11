@@ -220,7 +220,7 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
 
           <div className="rows">
             {payments.map((p) => (
-              <div className="row" key={p.signature}>
+              <div className="row" key={`${p.signature}:${p.mint}`}>
                 <div className="k">
                   <div>{formatTimestamp(p.blockTime)}</div>
                   {p.note && <div>{p.note}</div>}
@@ -244,8 +244,9 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
       ) : (
         <>
           <p>
-            No Cookie Jar payments have reached this address yet. A transfer to this address without
-            a Cookie Jar memo is not shown here.
+            No Cookie Jar payments were found in the transactions this RPC still holds for this address.
+            A transfer to this address without a Cookie Jar memo is not shown here. A public Cookie Chain
+            node keeps roughly the last ten days; older payments are on chain but not in its index.
           </p>
           <p>
             <a href="#/">Make a payment link for this address</a>

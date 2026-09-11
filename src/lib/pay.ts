@@ -216,6 +216,29 @@ export async function buildPayment(args: BuildPaymentArgs): Promise<BuiltPayment
   };
 }
 
+/** The size of a token account under either program before extensions, which is what rent is quoted on. */
+const TOKEN_ACCOUNT_SIZE = 165;
+
+/**
+ * What the payer will spend opening the recipient's token account for `mint`, in lamports: zero when
+ * the account already exists. The mint's program is not known until the payment is built, so the
+ * associated address is checked under both programs and the account counts as present if either
+ * answers.
+ */
+export async function recipientAccountRent(
+  connection: Connection,
+  mint: PublicKey,
+  recipient: PublicKey,
+): Promise<bigint> {
+  const infos = await Promise.all(
+    [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) =>
+      connection.getAccountInfo(getAssociatedTokenAddressSync(mint, recipient, true, programId)),
+    ),
+  );
+  if (infos.some((info) => info !== null)) return 0n;
+  return BigInt(await connection.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_SIZE));
+}
+
 export interface SimulationOutcome {
   ok: boolean;
   /** The raw simulation error, when there was one. */
