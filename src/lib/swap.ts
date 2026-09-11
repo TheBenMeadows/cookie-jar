@@ -1,6 +1,10 @@
 import { Buffer } from "buffer";
 import { PublicKey, type Connection, type VersionedTransaction } from "@solana/web3.js";
-import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import {
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 
 import { CANDYSHOP_API, COOKIEBOX_AGG_API, COOK_MINT, DEFAULT_SLIPPAGE_BPS } from "./config";
 import { fetchJson, HttpError } from "./http";
@@ -266,7 +270,8 @@ export async function buildSwapTransaction(quote: SwapQuote, owner: string): Pro
  *   1. the payer is the fee payer and the only required signer, so nothing else is being co-signed;
  *   2. it simulates clean;
  *   3. the payer's own balances move the way the quote promised — at least the minimum out arrives,
- *      and nothing except the token being sold goes down.
+ *      no more of the token being sold leaves than the quote asked for, and nothing else goes down,
+ *      native COOK included.
  */
 
 /** Base units sit at offset 64 of an SPL token account, in Token and in Token-2022 alike. */
@@ -278,6 +283,13 @@ const TOKEN_ACCOUNT_AMOUNT_OFFSET = 64;
  * of signatures plus one account's rent.
  */
 const NATIVE_OVERHEAD_ALLOWANCE = 10_000_000n;
+
+/**
+ * How many accounts one `simulateTransaction` call will report back. An account that is not reported
+ * cannot be compared, so a wallet with more token accounts than fit alongside the owner is refused
+ * rather than checked with the rest of its holdings invisible.
+ */
+const SIMULATION_ACCOUNT_LIMIT = 60;
 
 export interface SwapVerification {
   ok: boolean;
@@ -343,9 +355,40 @@ export async function verifySwapTransaction(args: {
   }
 
   const nativeOut = quote.outputMint === COOK_MINT;
+
+  // A payer swapping into a token they have never held owns no account for it yet — the swap opens
+  // one. Both token programs' associated addresses are derived and watched from zero, so the credit
+  // has somewhere to show up. The one the mint does not belong to simply never appears in the
+  // simulation, and an account the simulation does not report counts as unchanged.
+  if (!nativeOut) {
+    let outputMint: PublicKey;
+    try {
+      outputMint = new PublicKey(quote.outputMint);
+    } catch {
+      return {
+        ok: false,
+        reason: `the quote names ${quote.outputMint} as the token to receive, which is not a mint address`,
+        expectedOutRaw: null,
+      };
+    }
+    for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+      const ata = getAssociatedTokenAddressSync(outputMint, owner, false, programId);
+      if (watched.some((w) => w.address.equals(ata))) continue;
+      watched.push({ address: ata, mint: quote.outputMint, before: 0n });
+    }
+  }
+
+  if (watched.length + 1 > SIMULATION_ACCOUNT_LIMIT) {
+    return {
+      ok: false,
+      reason: `checking this swap means watching ${watched.length} token accounts, more than one simulation reports, so it cannot be checked here — swap at ${quote.swapUrl} instead, or move the spare accounts together first`,
+      expectedOutRaw: null,
+    };
+  }
+
   const lamportsBefore = BigInt(await connection.getBalance(owner));
 
-  const addresses = [...watched.map((w) => w.address.toBase58()), owner.toBase58()].slice(0, 60);
+  const addresses = [...watched.map((w) => w.address.toBase58()), owner.toBase58()];
   const simulation = await connection.simulateTransaction(transaction, {
     replaceRecentBlockhash: true,
     sigVerify: false,
@@ -362,6 +405,7 @@ export async function verifySwapTransaction(args: {
 
   const post = simulation.value.accounts ?? [];
   let outDelta: bigint | null = null;
+  let inSpent = 0n;
 
   for (let i = 0; i < watched.length && i < addresses.length; i += 1) {
     const entry = watched[i];
@@ -377,8 +421,13 @@ export async function verifySwapTransaction(args: {
 
     const delta = after - entry.before;
     if (entry.mint === quote.outputMint) {
-      outDelta = (outDelta ?? 0n) + (delta > 0n ? delta : 0n);
-    } else if (entry.mint !== quote.inputMint && delta < 0n) {
+      // Signed, and summed across every account holding the mint: a route that takes the token out
+      // of one account and puts less of it back in another has delivered the difference, not the
+      // credit.
+      outDelta = (outDelta ?? 0n) + delta;
+    } else if (entry.mint === quote.inputMint) {
+      if (delta < 0n) inSpent += -delta;
+    } else if (delta < 0n) {
       return {
         ok: false,
         reason: `this transaction also takes ${-delta} base units of ${entry.mint} out of this wallet, which the quote did not mention`,
@@ -387,12 +436,30 @@ export async function verifySwapTransaction(args: {
     }
   }
 
+  // The token being sold is allowed to leave, but only as much of it as the quote asked for. Summed
+  // across accounts, because a route can draw the input from more than one of them.
+  const inQuoted = BigInt(quote.inAmount);
+  if (inSpent > inQuoted) {
+    return {
+      ok: false,
+      reason: `this transaction spends ${inSpent} base units of ${quote.inputMint}; the quote was for ${inQuoted}`,
+      expectedOutRaw: null,
+    };
+  }
+
+  const ownerAccount = post[addresses.length - 1];
+  const lamportsAfter = ownerAccount ? BigInt(ownerAccount.lamports) : null;
+
   if (nativeOut) {
-    const ownerAccount = post[addresses.length - 1];
-    if (ownerAccount) {
-      const after = BigInt(ownerAccount.lamports);
-      outDelta = after - lamportsBefore + NATIVE_OVERHEAD_ALLOWANCE;
-    }
+    // A native output arrives in the same balance the fee and any new account's rent come out of, so
+    // the measurement is the plain difference and the allowance moves to the threshold below.
+    if (lamportsAfter !== null) outDelta = lamportsAfter - lamportsBefore;
+  } else if (lamportsAfter !== null && lamportsAfter < lamportsBefore - NATIVE_OVERHEAD_ALLOWANCE) {
+    return {
+      ok: false,
+      reason: `this transaction also takes ${lamportsBefore - lamportsAfter} lamports out of this wallet, far past the fee and rent a swap needs, which the quote did not mention`,
+      expectedOutRaw: null,
+    };
   }
 
   const minOut = BigInt(quote.minOutAmount);
@@ -403,7 +470,10 @@ export async function verifySwapTransaction(args: {
       expectedOutRaw: null,
     };
   }
-  if (outDelta < minOut) {
+  // The allowance covers fee and rent drawn from the balance the output lands in; it never stands in
+  // for the output itself, so a native swap that leaves the balance no higher is refused outright.
+  const floor = nativeOut ? minOut - NATIVE_OVERHEAD_ALLOWANCE : minOut;
+  if (outDelta < floor || (nativeOut && outDelta <= 0n)) {
     return {
       ok: false,
       reason: `the quote promised at least ${minOut} base units out; the simulation delivers ${outDelta}`,

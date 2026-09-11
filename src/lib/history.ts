@@ -1,3 +1,4 @@
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import type { Connection, ParsedTransactionWithMeta, PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 
@@ -6,9 +7,13 @@ import { MEMO_PREFIX, parseMemo } from "./request";
 
 /**
  * A jar's history, rebuilt from chain data alone. No database and no indexer: `getSignaturesForAddress`
- * lists what touched the address, and each transaction's own balance deltas say what arrived. The
+ * lists what touched an address, and each transaction's own balance deltas say what arrived. The
  * memo is the filter — a transfer without the Cookie Jar prefix was not a Cookie Jar payment, and is
  * left out rather than guessed at.
+ *
+ * A jar is more than one address. Native COOK lands on the wallet, but an SPL transfer lands on a
+ * token account the wallet owns, and the two index separately, so the wallet and every token account
+ * under it are scanned and their signatures merged.
  */
 
 export interface JarPayment {
@@ -26,30 +31,33 @@ export interface JarPayment {
 
 const BATCH = 25;
 
-function chunk<T>(items: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
-}
-
+/**
+ * Reads every Memo-program instruction in a transaction and returns the first memo that parses
+ * as a Cookie Jar payment. A wallet or relayer memo earlier in the transaction is ignored.
+ */
 function memoText(tx: ParsedTransactionWithMeta): string | null {
   const memoProgram = MEMO_PROGRAM_ID.toBase58();
   const instructions = [
     ...tx.transaction.message.instructions,
     ...(tx.meta?.innerInstructions ?? []).flatMap((i) => i.instructions),
   ];
+  const memos: string[] = [];
   for (const ix of instructions) {
     if (ix.programId.toBase58() !== memoProgram) continue;
-    if ("parsed" in ix && typeof ix.parsed === "string") return ix.parsed;
-    if ("data" in ix && typeof ix.data === "string") {
+    if ("parsed" in ix && typeof ix.parsed === "string") {
+      memos.push(ix.parsed);
+    } else if ("data" in ix && typeof ix.data === "string") {
       // The RPC parses Memo instructions into `parsed`, so this branch only runs against a node
       // whose parser is older than the memo program version in use. Undecoded data is base58.
       try {
-        return new TextDecoder().decode(bs58.decode(ix.data));
+        memos.push(new TextDecoder().decode(bs58.decode(ix.data)));
       } catch {
-        return null;
+        continue;
       }
     }
+  }
+  for (const memo of memos) {
+    if (parseMemo(memo)) return memo;
   }
   return null;
 }
@@ -72,23 +80,34 @@ interface TokenReceipt {
   raw: bigint;
 }
 
-/** SPL tokens received by `jar`, read from the transaction's own token-balance deltas. */
+/**
+ * SPL tokens received by `jar`, read from the transaction's own token-balance deltas.
+ *
+ * Balances are matched by account index rather than by mint: a wallet can hold one mint in several
+ * accounts, and comparing an account's post-balance against another account's pre-balance reports a
+ * receipt that never happened. One row per mint, summed across the accounts that gained.
+ */
 function tokensReceived(tx: ParsedTransactionWithMeta, jar: string): TokenReceipt[] {
   if (!tx.meta) return [];
-  const before = new Map<string, bigint>();
+  const before = new Map<number, bigint>();
   for (const balance of tx.meta.preTokenBalances ?? []) {
     if (balance.owner !== jar) continue;
-    before.set(balance.mint, BigInt(balance.uiTokenAmount.amount));
+    before.set(balance.accountIndex, BigInt(balance.uiTokenAmount.amount));
   }
-  const receipts: TokenReceipt[] = [];
+  const receipts = new Map<string, TokenReceipt>();
   for (const balance of tx.meta.postTokenBalances ?? []) {
     if (balance.owner !== jar) continue;
-    const delta = BigInt(balance.uiTokenAmount.amount) - (before.get(balance.mint) ?? 0n);
-    if (delta > 0n) {
-      receipts.push({ mint: balance.mint, decimals: balance.uiTokenAmount.decimals, raw: delta });
-    }
+    const delta = BigInt(balance.uiTokenAmount.amount) - (before.get(balance.accountIndex) ?? 0n);
+    if (delta <= 0n) continue;
+    const existing = receipts.get(balance.mint);
+    if (existing) existing.raw += delta;
+    else receipts.set(balance.mint, {
+      mint: balance.mint,
+      decimals: balance.uiTokenAmount.decimals,
+      raw: delta,
+    });
   }
-  return receipts;
+  return [...receipts.values()];
 }
 
 function payerOf(tx: ParsedTransactionWithMeta): string | null {
@@ -98,20 +117,78 @@ function payerOf(tx: ParsedTransactionWithMeta): string | null {
 /** How many signatures a single `getSignaturesForAddress` call asks for. */
 const PAGE = 100;
 
-/** The point at which a jar stops digging. A busy address can hold far more history than this. */
+/** How many signature pages a single round requests at once. */
+const PARALLEL_PAGES = 6;
+
+/**
+ * The point at which a jar stops digging, shared across every address it owns. A busy address can
+ * hold far more history than this.
+ */
 export const SCAN_CAP = 1000;
 
 export interface JarHistory {
   payments: JarPayment[];
-  /** How many signatures were read to find them. */
+  /** How many signatures were read to find them, across every address a jar owns. */
   scanned: number;
-  /** True when the scan stopped at the cap rather than at the end of the address's history. */
+  /** True when the cap ran out with an address still unread to its end. */
   hitCap: boolean;
+  /** True when the scan stopped at `limit` payments with candidates left unfetched. */
+  stoppedAtLimit: boolean;
+}
+
+/** A signature worth fetching, and what it takes to put it in chronological order. */
+interface Candidate {
+  signature: string;
+  blockTime: number | null;
+  slot: number;
+}
+
+/** Base units sit at offset 64 of an SPL token account, in Token and in Token-2022 alike. */
+const TOKEN_ACCOUNT_AMOUNT_OFFSET = 64;
+
+/** How many of a jar's token accounts are read alongside its wallet. */
+export const MAX_TOKEN_ACCOUNTS = 30;
+
+function tokenAccountBalance(data: Uint8Array): bigint {
+  if (data.length < TOKEN_ACCOUNT_AMOUNT_OFFSET + 8) return 0n;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  return view.getBigUint64(TOKEN_ACCOUNT_AMOUNT_OFFSET, true);
 }
 
 /**
- * Read Cookie Jar payments into `jar`, paging back through its signatures until `limit` are found or
- * `SCAN_CAP` signatures have been read.
+ * Every address a jar's payments can land on: the wallet itself, plus the token accounts it owns
+ * under either token program. A token transfer names the token account, not the wallet, so a jar
+ * that read only its wallet would miss every SPL payment sent to an account it already had.
+ *
+ * A wallet can carry hundreds of token accounts left behind by airdrops, and each one costs a round
+ * trip whether or not it ever held anything, so the list is capped. The accounts holding a balance
+ * come first, largest first, since those are the ones a jar has been paid into; ties and empties are
+ * ordered by address, so the same jar reads the same way twice.
+ */
+async function jarAddresses(connection: Connection, jar: PublicKey): Promise<PublicKey[]> {
+  const owned = await Promise.all(
+    [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) =>
+      connection.getTokenAccountsByOwner(jar, { programId }).catch(() => null),
+    ),
+  );
+
+  const accounts: { pubkey: PublicKey; balance: bigint }[] = [];
+  for (const response of owned) {
+    for (const { pubkey, account } of response?.value ?? []) {
+      accounts.push({ pubkey, balance: tokenAccountBalance(new Uint8Array(account.data)) });
+    }
+  }
+  accounts.sort((a, b) => {
+    if (a.balance !== b.balance) return b.balance > a.balance ? 1 : -1;
+    return a.pubkey.toBase58() < b.pubkey.toBase58() ? -1 : 1;
+  });
+
+  return [jar, ...accounts.slice(0, MAX_TOKEN_ACCOUNTS).map((a) => a.pubkey)];
+}
+
+/**
+ * Read Cookie Jar payments into `jar`, paging back through the signatures of every address it owns
+ * until `limit` payments are found or `SCAN_CAP` signatures have been read across all of them.
  *
  * Paging matters on an address that does anything besides receive payments: without it a jar with
  * forty trades on top of a payment shows nothing and looks empty, which is the one wrong answer a
@@ -123,44 +200,89 @@ export async function fetchJarHistory(
   limit = 40,
 ): Promise<JarHistory> {
   const jarAddress = jar.toBase58();
+  const addresses = await jarAddresses(connection, jar);
 
-  const candidates: string[] = [];
+  const candidates = new Map<string, Candidate>();
+  const scans = addresses.map((address) => ({
+    address,
+    before: undefined as string | undefined,
+    found: 0,
+    done: false,
+  }));
   let scanned = 0;
-  let before: string | undefined;
-  let exhausted = false;
 
-  while (scanned < SCAN_CAP && candidates.length < limit) {
-    const page = await connection.getSignaturesForAddress(jar, {
-      limit: Math.min(PAGE, SCAN_CAP - scanned),
-      ...(before ? { before } : {}),
-    });
-    if (page.length === 0) {
-      exhausted = true;
-      break;
+  // One page per address per round, the round's pages asked for together. Reading an address to its
+  // own end before starting the next one would let a busy wallet spend the whole cap and leave its
+  // token accounts unread, which is the case that loses every SPL payment a jar ever took. Sharing
+  // the cap out each round also costs one round-trip per round rather than one per account.
+  while (scanned < SCAN_CAP) {
+    const active = scans.filter((scan) => !scan.done && scan.found < limit);
+    if (active.length === 0) break;
+    const share = Math.max(1, Math.floor((SCAN_CAP - scanned) / active.length));
+    const pages: (Awaited<ReturnType<Connection["getSignaturesForAddress"]>>)[] = [];
+    for (let i = 0; i < active.length; i += PARALLEL_PAGES) {
+      const slice = active.slice(i, i + PARALLEL_PAGES);
+      const slicePages = await Promise.all(
+        slice.map((scan) =>
+          connection.getSignaturesForAddress(scan.address, {
+            limit: Math.min(PAGE, share),
+            ...(scan.before ? { before: scan.before } : {}),
+          }),
+        ),
+      );
+      pages.push(...slicePages);
     }
-    scanned += page.length;
-    before = page[page.length - 1]?.signature;
-    for (const entry of page) {
-      if (entry.err !== null) continue;
-      // The RPC summarises a transaction's memos here, so a transaction with no Cookie Jar memo can
-      // be skipped without fetching it. A null summary means "not reported", not "no memo".
-      if (entry.memo !== null && entry.memo !== undefined && !entry.memo.includes(MEMO_PREFIX)) {
+
+    for (const [i, page] of pages.entries()) {
+      const scan = active[i];
+      if (!scan) continue;
+      if (page.length === 0) {
+        scan.done = true;
         continue;
       }
-      candidates.push(entry.signature);
-      if (candidates.length >= limit) break;
+      scanned += page.length;
+      scan.before = page[page.length - 1]?.signature;
+      for (const entry of page) {
+        if (entry.err !== null) continue;
+        // The RPC summarises a transaction's memos here, so a transaction with no Cookie Jar memo
+        // can be skipped without fetching it. A null summary means "not reported", not "no memo".
+        if (entry.memo !== null && entry.memo !== undefined && !entry.memo.includes(MEMO_PREFIX)) {
+          continue;
+        }
+        scan.found += 1;
+        if (candidates.has(entry.signature)) continue;
+        candidates.set(entry.signature, {
+          signature: entry.signature,
+          blockTime: entry.blockTime ?? null,
+          slot: entry.slot,
+        });
+      }
     }
   }
 
-  const hitCap = !exhausted && scanned >= SCAN_CAP && candidates.length < limit;
-  if (candidates.length === 0) return { payments: [], scanned, hitCap };
+  const stoppedAtCap = scans.some((scan) => !scan.done && scan.found < limit);
+
+  // Signatures come back newest first per address, so an address's newest `limit` candidates are
+  // enough: the newest `limit` overall cannot contain one that a single address already has `limit`
+  // newer entries in front of. Merging them puts the whole jar back in one order — by slot, which
+  // every entry carries and which only ever counts up, rather than by a block time the RPC can
+  // report as null and which would then sort a recent payment behind older ones.
+  const ordered = [...candidates.values()].sort((a, b) => b.slot - a.slot);
 
   const payments: JarPayment[] = [];
-  for (const batch of chunk(candidates, BATCH)) {
+  // Counted in transactions rather than rows: one transaction can pay a jar in two assets, and its
+  // rows are kept together. `limit` is the point at which a jar stops fetching, so the list can run
+  // one transaction's worth past it rather than end halfway through a receipt.
+  let read = 0;
+
+  while (read < ordered.length && payments.length < limit) {
+    const batch = ordered.slice(read, read + BATCH).map((c) => c.signature);
     const transactions = await connection.getParsedTransactions(batch, {
       maxSupportedTransactionVersion: 0,
     });
     for (const tx of transactions) {
+      if (payments.length >= limit) break;
+      read += 1;
       if (!tx || tx.meta?.err) continue;
       const memo = memoText(tx);
       if (!memo) continue;
@@ -200,7 +322,7 @@ export async function fetchJarHistory(
   }
 
   payments.sort((a, b) => (b.blockTime ?? 0) - (a.blockTime ?? 0));
-  return { payments, scanned, hitCap };
+  return { payments, scanned, hitCap: stoppedAtCap, stoppedAtLimit: read < ordered.length };
 }
 
 export interface JarTotal {

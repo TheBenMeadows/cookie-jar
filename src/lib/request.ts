@@ -60,9 +60,13 @@ interface WireRequest {
   r?: string;
 }
 
+/**
+ * Strips Unicode format characters (category Cf) before trimming and checking length.
+ * A right-to-left override in a label can reverse how the words beside an amount read.
+ */
 function trimmedOrUndefined(value: string | undefined, cap: number, field: string): string | undefined {
   if (value === undefined) return undefined;
-  const s = value.trim();
+  const s = value.replace(/\p{Cf}/gu, "").trim();
   if (s === "") return undefined;
   if (s.length > cap) throw new RequestError(`${field} is longer than ${cap} characters`);
   return s;

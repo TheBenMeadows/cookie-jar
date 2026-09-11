@@ -1,6 +1,6 @@
 import { useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getConnection, waitForSignature } from "../lib/chain";
 import { COOK_MINT, explorerTxUrl } from "../lib/config";
@@ -58,6 +58,8 @@ export function SwapPanel(props: Props): JSX.Element {
   const [error, setError] = useState<string | null>(null);
 
   const sourceHolding = candidates?.find((c) => c.mint === source) ?? null;
+  /** Which token the field is being seeded for, readable from inside a suggestion still in flight. */
+  const seedingFor = useRef<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -200,10 +202,25 @@ export function SwapPanel(props: Props): JSX.Element {
               value={source ?? ""}
               onChange={(e) => {
                 const mint = e.target.value;
+                seedingFor.current = mint;
                 setSource(mint);
                 setQuote(null);
+                setPrepared(null);
+                setPhase("idle");
                 const holding = candidates.find((c) => c.mint === mint);
-                if (holding) void suggestInput(holding).then(setInputAmount);
+                if (holding) {
+                  void suggestInput(holding).then((amount) => {
+                    // The suggestion reads two prices, so it can land long after the payer has moved
+                    // on. It applies only while its own token is still the one selected, and it
+                    // rewrites the field, so anything quoted or prepared against the old figure goes
+                    // with it.
+                    if (seedingFor.current !== mint) return;
+                    setInputAmount(amount);
+                    setQuote(null);
+                    setPrepared(null);
+                    setPhase("idle");
+                  });
+                }
               }}
             >
               <option value="" disabled>
@@ -225,8 +242,12 @@ export function SwapPanel(props: Props): JSX.Element {
                 inputMode="decimal"
                 value={inputAmount}
                 onChange={(e) => {
+                  // A transaction already built and checked is for the amount that was quoted, so it
+                  // goes with the quote: Confirm must never still offer the previous figure.
                   setInputAmount(e.target.value);
                   setQuote(null);
+                  setPrepared(null);
+                  setPhase("idle");
                 }}
               />
               <span className="hint">
