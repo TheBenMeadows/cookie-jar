@@ -171,18 +171,21 @@ export async function buildPayment(args: BuildPaymentArgs): Promise<BuiltPayment
     const destination = getAssociatedTokenAddressSync(mint, recipient, true, tokenProgramId);
 
     const destinationInfo = await connection.getAccountInfo(destination);
-    if (!destinationInfo) {
-      createsRecipientAccount = true;
-      transaction.add(
-        createAssociatedTokenAccountIdempotentInstruction(
-          payer,
-          destination,
-          recipient,
-          mint,
-          tokenProgramId,
-        ),
-      );
-    }
+    createsRecipientAccount = destinationInfo === null;
+
+    // The idempotent create rides along whether or not the account exists. It costs nothing when it
+    // does — no rent, no state change — and it names the recipient's wallet as an account key, which
+    // is what puts the transfer in `getSignaturesForAddress(wallet)`. Without it a token transfer
+    // touches only the token account, and the jar page cannot see its own payment.
+    transaction.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        payer,
+        destination,
+        recipient,
+        mint,
+        tokenProgramId,
+      ),
+    );
 
     transaction.add(
       createTransferCheckedInstruction(

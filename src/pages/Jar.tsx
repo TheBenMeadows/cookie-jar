@@ -31,6 +31,7 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
   const [resolved, setResolved] = useState<ResolvedRecipient | null>(null);
   const [payments, setPayments] = useState<JarPayment[] | null>(null);
   const [hitCap, setHitCap] = useState(false);
+  const [stoppedAtLimit, setStoppedAtLimit] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadCount, setReloadCount] = useState(0);
@@ -60,6 +61,7 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
       if (!live) return;
       setPayments(history.payments);
       setHitCap(history.hitCap);
+      setStoppedAtLimit(history.stoppedAtLimit);
       setLoading(false);
     })().catch((e: unknown) => {
       if (live) {
@@ -206,8 +208,11 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
           <p className="small">
             {totalPaymentsCount} {totalPaymentsCount === 1 ? "payment" : "payments"} across{" "}
             {totalTokensCount} {totalTokensCount === 1 ? "token" : "tokens"}.
+            {stoppedAtLimit
+              ? ` Showing the latest ${totalPaymentsCount}; older transactions on this jar were not read.`
+              : ""}
             {hitCap
-              ? ` Only the most recent ${SCAN_CAP} transactions on this address were read, so older payments are not listed.`
+              ? ` Only the most recent ${SCAN_CAP} transactions on this jar's addresses were read, so older payments are not listed.`
               : ""}
           </p>
 

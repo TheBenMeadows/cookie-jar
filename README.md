@@ -21,10 +21,10 @@ Read the jar. The Jar page lists what arrived, totalled by token, with a link to
 Every payment is one Cookie Chain transaction:
 
 - native COOK: a `SystemProgram.transfer`
-- an SPL token: a `TransferChecked`, preceded by an idempotent create for the recipient's associated token account when they do not have one
+- an SPL token: a `TransferChecked`, preceded by an idempotent create for the recipient's associated token account. The create rides along on every token payment — it costs nothing when the account is already there, and it names the recipient's wallet among the transaction's account keys, which is what lets their jar find the payment afterwards
 - both: an SPL Memo instruction whose text starts with `cookiejar:1`
 
-The memo is what makes a jar readable. `Jar` calls `getSignaturesForAddress` on the recipient, fetches each transaction, keeps the ones whose memo starts with the prefix, and takes the amount from the transaction's own `preBalances`/`postBalances` and `preTokenBalances`/`postTokenBalances`. No indexer and no database are involved: any Solana RPC client pointed at Cookie Chain can rebuild the same list.
+The memo is what makes a jar readable. A jar is more than one address — native COOK lands on the wallet, an SPL transfer lands on a token account the wallet owns, and the two index separately — so `Jar` lists the recipient's wallet plus every token account under it, calls `getSignaturesForAddress` on each, merges the results into one list in block order, fetches each transaction, keeps the ones whose memo starts with the prefix, and takes the amount from the transaction's own `preBalances`/`postBalances` and `preTokenBalances`/`postTokenBalances`. No indexer and no database are involved: any Solana RPC client pointed at Cookie Chain can rebuild the same list.
 
 A `.cook` name is read straight from the CookOven registry program. `resolveRecipient` derives the `["domain", label]` program address, reads the account, and decodes the owner. A name that is listed for sale on the `.cook` marketplace is refused rather than resolved. The registry then points it at the marketplace escrow, which is program-owned and has no signer, so paying it would send the money somewhere nobody can spend it.
 
@@ -66,8 +66,8 @@ The dev server prints a local URL. Open it, connect a wallet, and make a link.
 ```
 npm run build      # typecheck, then a static bundle in dist/
 npm run preview    # serve dist/ locally
-npm test           # 51 unit and render tests, no network
-npm run live       # 18 checks against the live chain, no key, no funds
+npm test           # 80 unit and render tests, no network
+npm run live       # 19 checks against the live chain, no key, no funds
 npm run lint
 ```
 
@@ -101,7 +101,7 @@ Any other static host works the same way. Upload `dist/`.
 
 ## The live checks
 
-`npm run live` runs 18 checks against Cookie Chain and the ecosystem APIs. It signs nothing and sends nothing, so it runs without a key and without funds. It covers the link round-trip, `.cook` resolution for a registered and an unregistered name, the dollar quote, the token registry, a COOK transfer, an SPL transfer, both aggregators, a built swap transaction, and the jar history read.
+`npm run live` runs 19 checks against Cookie Chain and the ecosystem APIs. It signs nothing and sends nothing, so it runs without a key and without funds. It covers the link round-trip, `.cook` resolution for a registered and an unregistered name, the dollar quote, the token registry, a COOK transfer, an SPL transfer, both aggregators, a built swap transaction, and the jar history read — including one known payment into the demo jar, read back from the chain with its amount and its reference for as long as the retention window holds it.
 
 The transfer checks run twice over. Once as a real holder with signature verification off, which proves the transaction is valid end to end. Once as a freshly generated keypair, which must fail with `AccountNotFound` and nothing else. An address that has never held COOK has no account on chain, so that error is the whole of what is wrong, and it proves the rest of the transaction is well formed.
 
@@ -121,7 +121,7 @@ Step 5 is the one that matters. It proves the history is rebuilt from chain data
 
 A jar sees only as far back as its RPC retains. `getSignaturesForAddress` can answer only for blocks the node still holds, and the public Cookie Chain endpoint keeps a rolling window: measured on 2026-09-08, `getFirstAvailableBlock` was 21,802,517 against slot 23,978,778, which is about 2.2 million slots, or roughly ten days. Payments older than the window are on chain but not in the index, and no client can list them from that endpoint. `npm run live` prints the current figure. An archival RPC set through `VITE_COOKIE_RPC_URL` sees further.
 
-Within the window, a jar pages back through signatures until it has 50 Cookie Jar payments or has read 1,000 signatures, and says so in the page when it stops at the cap.
+Within the window, a jar pages back through the signatures of its wallet and of the token accounts it owns, a page at a time from each in turn, until it has 50 Cookie Jar payments or has read 1,000 signatures across all of those addresses. The page says which of the two stopped it: it shows the latest 50 when more payments remain to be read, and names the 1,000-signature cap when that ran out first. At most 30 token accounts are read alongside the wallet, the ones holding a balance first, because a wallet can carry hundreds of empty accounts left behind by airdrops and each one costs a request.
 
 A transfer to a jar's address without a Cookie Jar memo is left out. A jar lists Cookie Jar payments. Read the address on Cookiescan for a full account statement.
 

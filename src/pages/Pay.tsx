@@ -20,6 +20,7 @@ import {
   displayAmount,
   formatUsd,
   groupDigits,
+  isRounded,
   rawToUi,
   shortAddress,
   uiToRaw,
@@ -37,7 +38,7 @@ import {
 } from "../lib/request";
 import { fetchToken } from "../lib/tokens";
 
-type Stage = "reading" | "ready" | "sending" | "paid";
+type Stage = "reading" | "ready" | "sending" | "paid" | "failed";
 
 interface Resolved {
   address: PublicKey;
@@ -55,18 +56,23 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   const [request, setRequest] = useState<PaymentRequest | null>(null);
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [priceUsd, setPriceUsd] = useState<number | null>(null);
+  /** The ticker the asset registry gives this mint, which outranks the one the link carries. */
+  const [registrySymbol, setRegistrySymbol] = useState<string | null>(null);
   const [enteredAmount, setEnteredAmount] = useState("");
   const [holding, setHolding] = useState<Holding | null>(null);
   const [stage, setStage] = useState<Stage>("reading");
   const [signature, setSignature] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
+  /** What the chain reported when a transaction landed and failed. */
+  const [chainError, setChainError] = useState<string | null>(null);
   /** Bumped after a swap so the balance below the amount is re-read. */
   const [balanceEpoch, setBalanceEpoch] = useState(0);
   const [picking, setPicking] = useState(false);
 
   const decimals = request ? tokenDecimals(request) : COOK_DECIMALS;
-  const symbol = request ? tokenSymbol(request) : COOK_SYMBOL;
+  // The link's ticker is attacker-controlled text and the registry's is read from the same mint the
+  // transfer moves, so the registry wins wherever it has one.
+  const symbol = registrySymbol ?? (request ? tokenSymbol(request) : COOK_SYMBOL);
   const mint = request?.mint ?? COOK_MINT;
 
   // Read the link, then resolve the name and the price it needs. All three are chain or ecosystem
@@ -74,6 +80,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   useEffect(() => {
     let live = true;
     setError(null);
+    setRegistrySymbol(null);
     setStage("reading");
     (async () => {
       const decoded = decodeRequest(payload);
@@ -87,6 +94,10 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
       const token = await fetchToken(decoded.mint ?? "cook").catch(() => null);
       if (!live) return;
       setPriceUsd(token?.priceUsd ?? null);
+      // `?` is what the registry returns for a mint whose metadata names no ticker, which is the one
+      // case where the link's own string is the better of the two.
+      const ticker = token?.symbol;
+      setRegistrySymbol(ticker && ticker !== "?" ? ticker : null);
       setStage("ready");
     })().catch((e: unknown) => {
       if (live) {
@@ -151,7 +162,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   const pay = useCallback(async () => {
     if (!request || !resolved || !publicKey || rawAmount === null) return;
     setError(null);
-    setWarning(null);
+    setChainError(null);
     setStage("sending");
     try {
       // The address was resolved when the page opened. A `.cook` name can be transferred or listed
@@ -193,10 +204,12 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
         "confirmed",
       );
       setSignature(sent);
+      // A transaction can land on chain and still fail there. The signature is real either way, so it
+      // is kept for the explorer link, but only a clean confirmation is a payment.
       if (confirmation.value.err) {
-        setWarning(
-          "the network accepted the transaction but reported an error confirming it — check the explorer",
-        );
+        setChainError(JSON.stringify(confirmation.value.err));
+        setStage("failed");
+        return;
       }
       setStage("paid");
     } catch (e: unknown) {
@@ -222,6 +235,53 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   }
 
   const usdValue = rawAmount !== null && priceUsd ? rawToUsd(rawAmount, priceUsd, decimals) : null;
+  /** The figure the transaction carries, to every decimal place the token has. */
+  const exactAmount = groupDigits(rawToUi(rawAmount ?? 0n, decimals));
+  const roundedHeadline = rawAmount !== null && isRounded(rawAmount, decimals);
+
+  if (stage === "failed" && signature) {
+    return (
+      <>
+        <p className="stamp stopped">Not paid</p>
+        <h1>This payment failed on chain</h1>
+        <p>
+          Cookie Chain ran this transaction and it failed, so the {symbol} stayed in your wallet. The
+          network fee was spent either way.
+        </p>
+        <dl className="rows">
+          <div className="row">
+            <dt>To</dt>
+            <dd className="mono">{request.to}</dd>
+          </div>
+          <div className="row">
+            <dt>Amount</dt>
+            <dd className="mono tabular">
+              {exactAmount} {symbol}
+            </dd>
+          </div>
+          <div className="row">
+            <dt>Signature</dt>
+            <dd className="mono">
+              <a href={explorerTxUrl(signature)}>{shortAddress(signature, 10, 8)}</a>
+            </dd>
+          </div>
+        </dl>
+        {chainError && <p className="alarm">The chain reported {chainError}</p>}
+        <p>
+          <button
+            className="primary"
+            onClick={() => {
+              setSignature(null);
+              setChainError(null);
+              setStage("ready");
+            }}
+          >
+            Try this payment again
+          </button>
+        </p>
+      </>
+    );
+  }
 
   if (stage === "paid" && signature) {
     return (
@@ -264,7 +324,6 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
             </dd>
           </div>
         </dl>
-        {warning && <p className="alarm">{warning}</p>}
         <p className="small">
           The memo on this transaction is what puts it in the jar's history. Anyone can read it back
           from the chain, with or without this app.
@@ -302,6 +361,11 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
             <span>{rawAmount === null ? "…" : displayAmount(rawAmount, decimals)}</span>
             <span className="unit">{symbol}</span>
           </div>
+          {roundedHeadline && (
+            <p className="exact mono">
+              {exactAmount} {symbol} exactly
+            </p>
+          )}
           <p className="usd">
             {request.usd
               ? `${formatUsd(Number(request.usd))} at ${priceUsd ? `$${priceUsd.toPrecision(4)}` : "the current price"} per ${symbol}`
@@ -366,10 +430,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
           disabled={payBlocker !== null}
           onClick={() => (connected ? void pay() : setPicking(true))}
         >
-          {payBlocker ??
-            (connected
-              ? `Pay ${displayAmount(rawAmount ?? 0n, decimals)} ${symbol}`
-              : "Connect a wallet to pay")}
+          {payBlocker ?? (connected ? `Pay ${exactAmount} ${symbol}` : "Connect a wallet to pay")}
         </button>
       </p>
 

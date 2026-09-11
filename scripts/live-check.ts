@@ -15,7 +15,14 @@ import { Keypair, PublicKey, SystemProgram, VersionedTransaction } from "@solana
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
 import { getConnection } from "../src/lib/chain";
-import { BRIDGE_URL, COOK_DECIMALS, COOK_MINT, COOK_SYMBOL, RPC_URL } from "../src/lib/config";
+import {
+  BRIDGE_URL,
+  COOK_DECIMALS,
+  COOK_MINT,
+  COOK_SYMBOL,
+  MEMO_PROGRAM_ID,
+  RPC_URL,
+} from "../src/lib/config";
 import { fetchDomain, resolveRecipient } from "../src/lib/domains";
 import { groupDigits, rawToUi, uiToRaw } from "../src/lib/format";
 import { fetchJarHistory } from "../src/lib/history";
@@ -53,6 +60,17 @@ const KNOWN_NAME = "cookie.cook";
 
 /** A token with real Cookie Chain liquidity, used for the SPL and swap checks. */
 const TRASHCOIN_MINT = "GNFqCqaU9R2jas4iaKEFZM5hiX5AHxBL7rPHTCpX5T6z";
+
+/** The jar the README points at. What it holds depends on who has paid it and how long ago. */
+const DEMO_JAR = "5ZJsQcVGMqBbuiSQjRT1dBntDp3x8YbfWf359mPdEGwA";
+
+/** A payment into that jar, read off the chain. It leaves the node when the window rolls past it. */
+const DEMO_PAYMENT = {
+  signature:
+    "HmqbY8zgeZQBXr8L9iAwDaJmtFrC6cfyEjzNwPGZSfd48QyQJtz7hsQB6mYQ2o6UKX1NAUvxZaUGeG7qYvftsHn",
+  rawAmount: 1_200_000_000_000n,
+  ref: "INV-2026-014",
+};
 
 /** Somewhere for the test payments to point. Never receives anything — nothing is ever sent. */
 const SINK = Keypair.generate().publicKey;
@@ -350,15 +368,51 @@ async function main(): Promise<void> {
   }
 
   await check("jar history reads from chain", async () => {
-    const jar = await resolveRecipient(connection, KNOWN_NAME);
-    const history = await fetchJarHistory(connection, jar.address, 20);
+    // Read against the memo program rather than a jar: every Cookie Jar payment on the chain calls
+    // it, so it is the one address with activity inside the RPC's window on any day this runs. What
+    // is being checked is the read path — that signatures come back and parse — not a balance.
+    const history = await fetchJarHistory(connection, MEMO_PROGRAM_ID, 20);
     assert(Array.isArray(history.payments), "history did not come back as a list");
     assert(history.scanned > 0, "the scan read no signatures at all");
+    return `${MEMO_PROGRAM_ID.toBase58()}: ${history.scanned} signatures read, ${history.payments.length} parsed as payments to that address (cap hit: ${history.hitCap})`;
+  });
+
+  await check("the demo jar's history answers in the right shape", async () => {
+    const jar = new PublicKey(DEMO_JAR);
+    const history = await fetchJarHistory(connection, jar, 20);
+    assert(Array.isArray(history.payments), "history did not come back as a list");
+    assert(typeof history.hitCap === "boolean", "hitCap did not come back as a flag");
+    assert(typeof history.stoppedAtLimit === "boolean", "stoppedAtLimit did not come back as a flag");
     for (const payment of history.payments) {
       assert(payment.rawAmount > 0n, "a history row recorded a non-positive amount");
       assert(payment.signature.length > 0, "a history row has no signature");
     }
-    return `${KNOWN_NAME} (${jar.address.toBase58()}): ${history.payments.length} Cookie Jar payments in ${history.scanned} signatures scanned (cap hit: ${history.hitCap})`;
+    // An address with nothing inside the node's retention window is the documented limit, not a
+    // fault: the read above is what says the path works.
+    if (history.scanned === 0) {
+      return `${DEMO_JAR}: no activity inside this RPC's retention window, so there is nothing for a jar to list`;
+    }
+
+    // While the window still holds it, a known payment is read back in full: the amount and the
+    // reference a payer put on chain, rebuilt from the chain alone. The node is asked first whether
+    // it still holds that signature, because the jar can have newer activity inside the window
+    // after the demo payment has dropped out of it.
+    const status = await connection.getSignatureStatuses([DEMO_PAYMENT.signature], {
+      searchTransactionHistory: true,
+    });
+    if (status.value[0] === null) {
+      return `${DEMO_JAR}: ${history.payments.length} Cookie Jar payments in ${history.scanned} signatures scanned; the demo payment ${DEMO_PAYMENT.signature.slice(0, 10)}… is older than this RPC's retention window, so it cannot be listed`;
+    }
+    const known = history.payments.find((p) => p.signature === DEMO_PAYMENT.signature);
+    assert(known !== undefined, `the jar did not list payment ${DEMO_PAYMENT.signature}`);
+    assert(
+      known?.rawAmount === DEMO_PAYMENT.rawAmount,
+      `that payment came back as ${known?.rawAmount} base units rather than ${DEMO_PAYMENT.rawAmount}`,
+    );
+    assert(known?.ref === DEMO_PAYMENT.ref, `that payment's reference came back as ${known?.ref}`);
+    assert(known?.mint === COOK_MINT, `that payment came back against mint ${known?.mint}`);
+
+    return `${DEMO_JAR}: ${history.payments.length} Cookie Jar payments in ${history.scanned} signatures scanned (cap hit: ${history.hitCap}, stopped at limit: ${history.stoppedAtLimit}); ${groupDigits(rawToUi(known?.rawAmount ?? 0n, COOK_DECIMALS))} ${COOK_SYMBOL} ref ${known?.ref} from ${known?.from} reads back from ${DEMO_PAYMENT.signature.slice(0, 10)}…`;
   });
 
   await check("how far back a jar can see on this RPC", async () => {

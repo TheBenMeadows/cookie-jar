@@ -37,6 +37,9 @@ export function displayAmount(raw: bigint | string, decimals: number): string {
   const exact = rawToUi(raw, decimals);
   const value = Number(exact);
   if (!Number.isFinite(value)) return groupDigits(exact);
+  // `toFixed` switches to exponent notation from 1e21 up, and "1e+21 COOK" is not an amount anyone
+  // can check against a wallet prompt.
+  if (Math.abs(value) >= 1e21) return groupDigits(exact);
 
   const magnitude = Math.abs(value);
   let places: number;
