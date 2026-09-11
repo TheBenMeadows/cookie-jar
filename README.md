@@ -129,7 +129,7 @@ A jar row records what the chain recorded, and nothing more. Anyone can send a j
 
 The swap step seeds its input amount from the two Cookiescan prices plus 3% headroom, because both aggregators quote exact-in rather than exact-out. The quote below the field is what the router actually offers, and the payer can change the number and re-quote.
 
-`npm audit` reports advisories in `bigint-buffer` and in the React Native packages that `@solana/wallet-adapter-react` pulls in for mobile wallet support. Both come from the Solana dependency tree and neither has a fix that does not break the SDK.
+`npm audit` reports advisories in the Solana dependency tree, none of them in this app's own code and none with a fix that keeps the SDK working. One reaches the shipped bundle: `bigint-buffer`, pulled in by `@solana/spl-token`, whose advisory concerns its native Node addon; browsers never load that addon and run the package's plain JavaScript path instead. The others (`jayson`, `stream-json`, `uuid` under `@solana/web3.js`, and the React Native packages under `@solana/wallet-adapter-react`'s mobile support) are Node-only or mobile-only and are not in the bundle the page serves. The build tooling itself (Vite, Vitest, esbuild) is kept at versions with no open advisory.
 
 ## Licence
 
