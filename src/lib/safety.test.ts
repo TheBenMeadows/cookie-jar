@@ -1,9 +1,19 @@
 import { Keypair, PublicKey, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import {
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 import { describe, expect, it, vi } from "vitest";
 
 import { COOK_MINT } from "./config";
-import { buildPayment, chooseSourceAccount, fetchMintFacts, PaymentError } from "./pay";
+import {
+  buildPayment,
+  chooseSourceAccount,
+  fetchMintFacts,
+  PaymentError,
+  recipientAccountRent,
+} from "./pay";
 import { bestSwapQuote, verifySwapTransaction, type SwapQuote } from "./swap";
 
 /**
@@ -102,6 +112,74 @@ describe("the transfer draws from an account that can cover it", () => {
   });
 });
 
+describe("an SPL payment names the recipient's wallet", () => {
+  /** `getAccountInfo` answers for the mint, then for the recipient's token account. */
+  const stub = (destinationExists: boolean) =>
+    ({
+      getAccountInfo: vi.fn(async (key: PublicKey) => {
+        if (key.equals(MINT)) return { owner: TOKEN_PROGRAM_ID, data: mintAccount(6) };
+        return destinationExists ? { owner: TOKEN_PROGRAM_ID, data: Buffer.alloc(165) } : null;
+      }),
+      getParsedTokenAccountsByOwner: vi.fn(async () => ({
+        value: [
+          {
+            pubkey: Keypair.generate().publicKey,
+            account: { data: { parsed: { info: { tokenAmount: { amount: "1000000" } } } } },
+          },
+        ],
+      })),
+      getLatestBlockhash: vi.fn(async () => ({
+        blockhash: PublicKey.default.toBase58(),
+        lastValidBlockHeight: 1,
+      })),
+    }) as never;
+
+  const build = async (destinationExists: boolean) =>
+    buildPayment({
+      connection: stub(destinationExists),
+      payer: PAYER,
+      recipient: RECIPIENT,
+      rawAmount: 1000n,
+      mint: MINT.toBase58(),
+      decimals: 6,
+      memo: "cookiejar:1|INV-1|a token payment",
+    });
+
+  it("carries the wallet as an account key when its token account already exists", async () => {
+    const built = await build(true);
+    const keys = built.transaction.compileMessage().accountKeys.map((k) => k.toBase58());
+    expect(keys).toContain(RECIPIENT.toBase58());
+    // The account was there, so nobody pays rent for it, and the fee row must not say they do.
+    expect(built.createsRecipientAccount).toBe(false);
+  });
+
+  it("carries it on the first payment too, and reports the rent", async () => {
+    const built = await build(false);
+    const keys = built.transaction.compileMessage().accountKeys.map((k) => k.toBase58());
+    expect(keys).toContain(RECIPIENT.toBase58());
+    expect(built.createsRecipientAccount).toBe(true);
+  });
+});
+
+describe("the rent a payer spends opening the recipient's token account", () => {
+  const ata2022 = getAssociatedTokenAddressSync(MINT, RECIPIENT, true, TOKEN_2022_PROGRAM_ID);
+  const stub = (present: PublicKey | null) =>
+    ({
+      getAccountInfo: vi.fn(async (key: PublicKey) =>
+        present && key.equals(present) ? { owner: TOKEN_2022_PROGRAM_ID, data: Buffer.alloc(165) } : null,
+      ),
+      getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
+    }) as never;
+
+  it("is the rent-exempt minimum when the account exists under neither program", async () => {
+    expect(await recipientAccountRent(stub(null), MINT, RECIPIENT)).toBe(2_039_280n);
+  });
+
+  it("is zero when the account exists under Token-2022", async () => {
+    expect(await recipientAccountRent(stub(ata2022), MINT, RECIPIENT)).toBe(0n);
+  });
+});
+
 describe("paying your own jar", () => {
   it("is refused before anything is built", async () => {
     await expect(
@@ -150,7 +228,21 @@ interface Owned {
   after: bigint;
 }
 
-function swapConnection(owned: Owned[], lamports = 0n) {
+/**
+ * The RPC answers `simulateTransaction` with one slot per address asked for, in that order, and a
+ * null slot for an address that holds no account. `after` names what each watched account ends at;
+ * an address the caller derives but the wallet does not own answers null unless `opened` gives it a
+ * balance. The last slot is always the owner's own, which carries the lamports.
+ */
+function swapConnection(
+  owned: Owned[],
+  lamportsBefore = 0n,
+  lamportsAfter = lamportsBefore,
+  opened: Owned[] = [],
+) {
+  const byAddress = new Map(
+    [...owned, ...opened].map((o) => [o.pubkey.toBase58(), o] as const),
+  );
   return {
     getTokenAccountsByOwner: vi.fn(async (_owner: PublicKey, filter: { programId: PublicKey }) => ({
       value: filter.programId.equals(TOKEN_PROGRAM_ID)
@@ -160,20 +252,29 @@ function swapConnection(owned: Owned[], lamports = 0n) {
           }))
         : [],
     })),
-    getBalance: vi.fn(async () => Number(lamports)),
-    simulateTransaction: vi.fn(async () => ({
-      value: {
-        err: null,
-        logs: [],
-        accounts: [
-          ...owned.map((o) => ({
-            data: [tokenAccount(o.mint, PAYER, o.after).toString("base64"), "base64"],
-            lamports: 0,
-          })),
-          { data: ["", "base64"], lamports: Number(lamports) },
-        ],
+    getBalance: vi.fn(async () => Number(lamportsBefore)),
+    simulateTransaction: vi.fn(
+      async (_tx: unknown, config: { accounts?: { addresses: string[] } }) => {
+        const addresses = config.accounts?.addresses ?? [];
+        return {
+          value: {
+            err: null,
+            logs: [],
+            accounts: addresses.map((address, i) => {
+              if (i === addresses.length - 1) {
+                return { data: ["", "base64"], lamports: Number(lamportsAfter) };
+              }
+              const account = byAddress.get(address);
+              if (!account) return null;
+              return {
+                data: [tokenAccount(account.mint, PAYER, account.after).toString("base64"), "base64"],
+                lamports: 0,
+              };
+            }),
+          },
+        };
       },
-    })),
+    ),
   } as never;
 }
 
@@ -241,6 +342,174 @@ describe("a swap transaction is checked before a wallet sees it", () => {
     });
     expect(result.ok).toBe(false);
     expect(result.reason).toMatch(/also takes 800 base units/);
+  });
+
+  it("refuses a swap that also drains the wallet's native balance", async () => {
+    const out = Keypair.generate().publicKey;
+    const inn = Keypair.generate().publicKey;
+    const result = await verifySwapTransaction({
+      connection: swapConnection(
+        [
+          { pubkey: out, mint: MINT, before: 0n, after: 5000n },
+          { pubkey: inn, mint: OTHER_MINT, before: 1000n, after: 0n },
+        ],
+        1_000_000_000n,
+        500_000_000n,
+      ),
+      transaction: transactionFrom(PAYER),
+      owner: PAYER,
+      quote: QUOTE,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/also takes 500000000 lamports/);
+  });
+
+  it("refuses a route that spends more of the input than the quote asked for", async () => {
+    const out = Keypair.generate().publicKey;
+    const inn = Keypair.generate().publicKey;
+    const result = await verifySwapTransaction({
+      connection: swapConnection([
+        { pubkey: out, mint: MINT, before: 0n, after: 5000n },
+        { pubkey: inn, mint: OTHER_MINT, before: 1_000_000n, after: 0n },
+      ]),
+      transaction: transactionFrom(PAYER),
+      owner: PAYER,
+      quote: QUOTE,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/spends 1000000 base units .*; the quote was for 1000/);
+  });
+
+  it("measures a native output rather than crediting the fee allowance to it", async () => {
+    const nativeQuote: SwapQuote = {
+      ...QUOTE,
+      outputMint: COOK_MINT,
+      outAmount: "5000000000",
+      minOutAmount: "4500000000",
+    };
+    const inn = Keypair.generate().publicKey;
+
+    const delivered = await verifySwapTransaction({
+      connection: swapConnection(
+        [{ pubkey: inn, mint: OTHER_MINT, before: 1000n, after: 0n }],
+        1_000_000_000n,
+        5_999_995_000n,
+      ),
+      transaction: transactionFrom(PAYER),
+      owner: PAYER,
+      quote: nativeQuote,
+    });
+    // The 5,000 lamports of fee come out of the same balance, so the figure the button shows is what
+    // the wallet ends up with and not a cent more.
+    expect(delivered).toMatchObject({ ok: true, expectedOutRaw: 4_999_995_000n });
+
+    const empty = await verifySwapTransaction({
+      connection: swapConnection(
+        [{ pubkey: inn, mint: OTHER_MINT, before: 1000n, after: 0n }],
+        1_000_000_000n,
+        999_995_000n,
+      ),
+      transaction: transactionFrom(PAYER),
+      owner: PAYER,
+      quote: nativeQuote,
+    });
+    expect(empty.ok).toBe(false);
+    expect(empty.reason).toMatch(/promised at least 4500000000 base units out/);
+
+    // A minimum under the fee allowance does not turn "nothing arrived" into a pass.
+    const tiny = await verifySwapTransaction({
+      connection: swapConnection(
+        [{ pubkey: inn, mint: OTHER_MINT, before: 1000n, after: 0n }],
+        1_000_000_000n,
+        999_995_000n,
+      ),
+      transaction: transactionFrom(PAYER),
+      owner: PAYER,
+      quote: { ...nativeQuote, outAmount: "5000000", minOutAmount: "4500000" },
+    });
+    expect(tiny.ok).toBe(false);
+    expect(tiny.expectedOutRaw).toBe(-5000n);
+  });
+
+  it("refuses to verify a wallet with more token accounts than one simulation reports", async () => {
+    const owned: Owned[] = Array.from({ length: 60 }, () => ({
+      pubkey: Keypair.generate().publicKey,
+      mint: OTHER_MINT,
+      before: 10n,
+      after: 10n,
+    }));
+    const result = await verifySwapTransaction({
+      connection: swapConnection(owned),
+      transaction: transactionFrom(PAYER),
+      owner: PAYER,
+      quote: QUOTE,
+    });
+    expect(result.ok).toBe(false);
+    // The two derived addresses for the output mint are part of what has to be watched.
+    expect(result.reason).toMatch(/watching 62 token accounts, more than one simulation reports/);
+  });
+
+  it("reads the output across accounts as a net figure", async () => {
+    const drained = Keypair.generate().publicKey;
+    const credited = Keypair.generate().publicKey;
+    const inn = Keypair.generate().publicKey;
+
+    const takesMoreThanItGives = await verifySwapTransaction({
+      connection: swapConnection([
+        { pubkey: drained, mint: MINT, before: 1000n, after: 0n },
+        { pubkey: credited, mint: MINT, before: 0n, after: 500n },
+        { pubkey: inn, mint: OTHER_MINT, before: 1000n, after: 0n },
+      ]),
+      transaction: transactionFrom(PAYER),
+      owner: PAYER,
+      quote: QUOTE,
+    });
+    expect(takesMoreThanItGives.ok).toBe(false);
+    expect(takesMoreThanItGives.reason).toMatch(/the simulation delivers -500/);
+
+    const delivers = await verifySwapTransaction({
+      connection: swapConnection([
+        { pubkey: drained, mint: MINT, before: 1000n, after: 900n },
+        { pubkey: credited, mint: MINT, before: 0n, after: 5000n },
+        { pubkey: inn, mint: OTHER_MINT, before: 1000n, after: 0n },
+      ]),
+      transaction: transactionFrom(PAYER),
+      owner: PAYER,
+      quote: QUOTE,
+    });
+    expect(delivers).toMatchObject({ ok: true, expectedOutRaw: 4900n });
+  });
+
+  describe("swapping into a token this wallet has never held", () => {
+    /** The account the swap opens: the associated address for the output mint, currently empty. */
+    const destination = getAssociatedTokenAddressSync(MINT, PAYER, false, TOKEN_PROGRAM_ID);
+    const inn = Keypair.generate().publicKey;
+
+    it("passes when the account the swap opens receives the output", async () => {
+      const result = await verifySwapTransaction({
+        connection: swapConnection(
+          [{ pubkey: inn, mint: OTHER_MINT, before: 1000n, after: 0n }],
+          0n,
+          0n,
+          [{ pubkey: destination, mint: MINT, before: 0n, after: 5000n }],
+        ),
+        transaction: transactionFrom(PAYER),
+        owner: PAYER,
+        quote: QUOTE,
+      });
+      expect(result).toMatchObject({ ok: true, expectedOutRaw: 5000n });
+    });
+
+    it("refuses when nothing arrives there either", async () => {
+      const result = await verifySwapTransaction({
+        connection: swapConnection([{ pubkey: inn, mint: OTHER_MINT, before: 1000n, after: 0n }]),
+        transaction: transactionFrom(PAYER),
+        owner: PAYER,
+        quote: QUOTE,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.reason).toMatch(/did not show this wallet receiving/);
+    });
   });
 
   it("refuses when the simulation itself fails", async () => {

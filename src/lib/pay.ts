@@ -171,18 +171,21 @@ export async function buildPayment(args: BuildPaymentArgs): Promise<BuiltPayment
     const destination = getAssociatedTokenAddressSync(mint, recipient, true, tokenProgramId);
 
     const destinationInfo = await connection.getAccountInfo(destination);
-    if (!destinationInfo) {
-      createsRecipientAccount = true;
-      transaction.add(
-        createAssociatedTokenAccountIdempotentInstruction(
-          payer,
-          destination,
-          recipient,
-          mint,
-          tokenProgramId,
-        ),
-      );
-    }
+    createsRecipientAccount = destinationInfo === null;
+
+    // The idempotent create rides along whether or not the account exists. It costs nothing when it
+    // does — no rent, no state change — and it names the recipient's wallet as an account key, which
+    // is what puts the transfer in `getSignaturesForAddress(wallet)`. Without it a token transfer
+    // touches only the token account, and the jar page cannot see its own payment.
+    transaction.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        payer,
+        destination,
+        recipient,
+        mint,
+        tokenProgramId,
+      ),
+    );
 
     transaction.add(
       createTransferCheckedInstruction(
@@ -211,6 +214,29 @@ export async function buildPayment(args: BuildPaymentArgs): Promise<BuiltPayment
     blockhash,
     lastValidBlockHeight,
   };
+}
+
+/** The size of a token account under either program before extensions, which is what rent is quoted on. */
+const TOKEN_ACCOUNT_SIZE = 165;
+
+/**
+ * What the payer will spend opening the recipient's token account for `mint`, in lamports: zero when
+ * the account already exists. The mint's program is not known until the payment is built, so the
+ * associated address is checked under both programs and the account counts as present if either
+ * answers.
+ */
+export async function recipientAccountRent(
+  connection: Connection,
+  mint: PublicKey,
+  recipient: PublicKey,
+): Promise<bigint> {
+  const infos = await Promise.all(
+    [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) =>
+      connection.getAccountInfo(getAssociatedTokenAddressSync(mint, recipient, true, programId)),
+    ),
+  );
+  if (infos.some((info) => info !== null)) return 0n;
+  return BigInt(await connection.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_SIZE));
 }
 
 export interface SimulationOutcome {
