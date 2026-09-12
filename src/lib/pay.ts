@@ -50,6 +50,12 @@ export interface BuildPaymentArgs {
    * unless a caller asks otherwise. Priced in micro-lamports per compute unit.
    */
   priorityFeeMicroLamports?: number;
+  /**
+   * Build the token transfer from the payer's associated account without checking that it holds
+   * the amount yet. For a payment that rides behind a swap in the same transaction: the swap fills
+   * that account before the transfer runs, and the whole thing is simulated together afterwards.
+   */
+  assumeFunded?: boolean;
 }
 
 export interface BuiltPayment {
@@ -167,7 +173,9 @@ export async function buildPayment(args: BuildPaymentArgs): Promise<BuiltPayment
           "Refusing to build a transfer against a figure the link got wrong.",
       );
     }
-    const source = await chooseSourceAccount(connection, payer, mint, tokenProgramId, rawAmount);
+    const source = args.assumeFunded
+      ? getAssociatedTokenAddressSync(mint, payer, true, tokenProgramId)
+      : await chooseSourceAccount(connection, payer, mint, tokenProgramId, rawAmount);
     const destination = getAssociatedTokenAddressSync(mint, recipient, true, tokenProgramId);
 
     const destinationInfo = await connection.getAccountInfo(destination);

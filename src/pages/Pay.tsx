@@ -1,8 +1,9 @@
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { SwapPanel } from "../components/SwapPanel";
+import { SwapPanel, type Checkout } from "../components/SwapPanel";
 import { WalletPicker } from "../components/WalletPicker";
 import { getConnection, signatureOutcome } from "../lib/chain";
 import {
@@ -266,6 +267,51 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
       setStage("ready");
     }
   }, [request, resolved, publicKey, rawAmount, connection, decimals, signTransaction]);
+
+  /**
+   * The payment as instructions, for the swap panel to put behind a swap in one transaction. Same
+   * recipient re-check as `pay`; the source account is assumed funded because the swap in front of
+   * it is what funds it, and the two are simulated together before the wallet sees them.
+   */
+  const checkout = useMemo((): Checkout | undefined => {
+    if (!request || !resolved || !publicKey || rawAmount === null || holding === null) return undefined;
+    return {
+      heldRaw: holding.spendable,
+      rawAmount,
+      build: async () => {
+        const current = await resolveRecipient(connection, request.to);
+        if (!current.address.equals(resolved.address)) {
+          throw new Error(
+            "the recipient changed while this page was open — reload and check the address before paying",
+          );
+        }
+        const built = await buildPayment({
+          connection,
+          payer: publicKey,
+          recipient: current.address,
+          rawAmount,
+          mint: request.mint,
+          decimals,
+          memo: buildMemo(request),
+          assumeFunded: true,
+        });
+        const native = built.tokenProgramId === null;
+        const destination = native
+          ? current.address
+          : getAssociatedTokenAddressSync(new PublicKey(mint), current.address, true, built.tokenProgramId ?? undefined);
+        return { instructions: built.transaction.instructions, destination, native };
+      },
+      onPaid: (sig) => {
+        setSignature(sig);
+        setStage("paid");
+      },
+      onFailed: (sig, err) => {
+        setSignature(sig);
+        setChainError(JSON.stringify(err));
+        setStage("failed");
+      },
+    };
+  }, [request, resolved, publicKey, rawAmount, holding, connection, decimals, mint]);
 
   if (stage === "reading" && !request) {
     return <p className="working">Reading the payment link…</p>;
@@ -558,6 +604,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
           targetSymbol={symbol}
           shortfallRaw={shortfall}
           onSwapped={() => setBalanceEpoch((e) => e + 1)}
+          checkout={checkout}
         />
       )}
 

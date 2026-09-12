@@ -1,8 +1,13 @@
 import { useWallet } from "@solana/wallet-adapter-react";
-import { PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { PublicKey, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getConnection, waitForSignature } from "../lib/chain";
+import { getConnection, signatureOutcome, waitForSignature } from "../lib/chain";
+import {
+  composeSwapAndPayment,
+  lookupTablesOf,
+  verifyComposedCheckout,
+} from "../lib/checkout";
 import { COOK_MINT, explorerTxUrl } from "../lib/config";
 import { fetchNativeBalance, fetchTokenHoldings, type Holding } from "../lib/balances";
 import { groupDigits, rawToUi, shortAddress, uiToRaw } from "../lib/format";
@@ -17,9 +22,26 @@ import { fetchToken } from "../lib/tokens";
 /**
  * The swap step, for a payer who holds the wrong token. Cookie Tab quotes both Cookie Chain
  * aggregators and hands the winning route to the payer's own wallet to sign — the funds never pass
- * through this app, and a swap is a separate transaction from the payment, so a payer can stop after
- * either one.
+ * through this app. With a checkout attached, the swap and the payment go to the wallet as one
+ * transaction that lands together or not at all; without one, or when the two do not fit in one
+ * transaction, the swap is its own transaction and the payment follows.
  */
+
+/** The payment this swap is for, so the two can share a transaction. */
+export interface Checkout {
+  /** Base units of the target token the payer already holds and can spend. */
+  heldRaw: bigint;
+  /** The whole payment, in base units of the target token. */
+  rawAmount: bigint;
+  /** The payment's instructions and where the money lands: the recipient's wallet, or their token account. */
+  build: () => Promise<{
+    instructions: TransactionInstruction[];
+    destination: PublicKey;
+    native: boolean;
+  }>;
+  onPaid: (signature: string) => void;
+  onFailed: (signature: string, err: unknown) => void;
+}
 
 interface Props {
   owner: PublicKey;
@@ -29,13 +51,14 @@ interface Props {
   /** How much more of the target token the payer needs, in base units. */
   shortfallRaw: bigint;
   onSwapped: () => void;
+  checkout?: Checkout;
 }
 
 interface Candidate extends Holding {
   priceUsd: number | null;
 }
 
-type Phase = "idle" | "preparing" | "confirm" | "signing" | "landing" | "done";
+type Phase = "idle" | "preparing" | "confirm" | "composing" | "signing" | "landing" | "done";
 
 interface Prepared {
   transaction: VersionedTransaction;
@@ -56,6 +79,15 @@ export function SwapPanel(props: Props): JSX.Element {
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [signature, setSignature] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Set once this route and payment were found not to fit one transaction, so the offer is withdrawn. */
+  const [twoStepOnly, setTwoStepOnly] = useState(false);
+
+  const checkout = props.checkout;
+  const coversPayment =
+    checkout !== undefined &&
+    prepared !== null &&
+    !twoStepOnly &&
+    prepared.expectedOutRaw + checkout.heldRaw >= checkout.rawAmount;
 
   const sourceHolding = candidates?.find((c) => c.mint === source) ?? null;
   /** Which token the field is being seeded for, readable from inside a suggestion still in flight. */
@@ -154,6 +186,7 @@ export function SwapPanel(props: Props): JSX.Element {
       });
       if (!check.ok) throw new Error(check.reason ?? "this swap did not pass its checks");
       setPrepared({ transaction, expectedOutRaw: check.expectedOutRaw ?? 0n });
+      setTwoStepOnly(false);
       setPhase("confirm");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
@@ -181,12 +214,68 @@ export function SwapPanel(props: Props): JSX.Element {
     }
   }, [prepared, signTransaction, connection, props]);
 
+  /**
+   * Swap and pay as one transaction. The swap half was checked on its own in `prepareSwap`; here the
+   * payment's instructions go on the end, the whole thing is simulated together, and only then does
+   * the wallet see it. If the two do not fit in one transaction, the offer is withdrawn and the
+   * swap-only path stays.
+   */
+  const swapAndPay = useCallback(async () => {
+    if (!prepared || !signTransaction || !checkout) return;
+    setError(null);
+    setPhase("composing");
+    try {
+      const payment = await checkout.build();
+      const tables = await lookupTablesOf(connection, prepared.transaction);
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      const composed = composeSwapAndPayment({
+        swap: prepared.transaction,
+        lookupTables: tables,
+        payment: payment.instructions,
+        payer: props.owner,
+        blockhash,
+      });
+      if (!composed.ok) {
+        setTwoStepOnly(true);
+        setPhase("confirm");
+        setError(
+          `this route and the payment do not fit in one transaction${composed.bytes ? ` (${composed.bytes} bytes)` : ""} — swap first, then pay`,
+        );
+        return;
+      }
+      const check = await verifyComposedCheckout({
+        connection,
+        transaction: composed.transaction,
+        destination: payment.destination,
+        native: payment.native,
+        rawAmount: checkout.rawAmount,
+      });
+      if (!check.ok) throw new Error(check.reason ?? "the combined transaction did not pass its checks");
+
+      setPhase("signing");
+      const signed = await signTransaction(composed.transaction);
+      const sent = await connection.sendRawTransaction(signed.serialize());
+      setSignature(sent);
+      setPhase("landing");
+      const landed = await signatureOutcome(connection, sent);
+      setPhase("done");
+      if (landed.err) checkout.onFailed(sent, landed.err);
+      else checkout.onPaid(sent);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+      setPhase("confirm");
+    }
+  }, [prepared, signTransaction, checkout, connection, props.owner]);
+
   return (
     <section>
       <h2>Short by {groupDigits(rawToUi(props.shortfallRaw, props.targetDecimals))} {props.targetSymbol}</h2>
       <p className="small">
-        Swap something else you hold into {props.targetSymbol} first. The route comes from the
-        Cookiebox and Candy Shop aggregators; the swap is its own transaction, signed by your wallet.
+        Swap something else you hold into {props.targetSymbol}. The route comes from the Cookiebox
+        and Candy Shop aggregators and is signed by your wallet
+        {checkout
+          ? "; when the swap covers the payment, both go to your wallet as one transaction."
+          : "; the swap is its own transaction."}
       </p>
 
       {candidates === null && <p className="working">Reading what this wallet holds…</p>}
@@ -269,18 +358,26 @@ export function SwapPanel(props: Props): JSX.Element {
               >
                 {phase === "preparing"
                   ? "Checking the swap…"
-                  : phase === "landing"
-                    ? "Swap landing…"
-                    : phase === "signing"
-                      ? "Waiting for your wallet…"
-                      : phase === "done"
-                        ? "Swapped"
-                        : "Check this swap"}
+                  : phase === "composing"
+                    ? "Checking swap and payment together…"
+                    : phase === "landing"
+                      ? "Landing…"
+                      : phase === "signing"
+                        ? "Waiting for your wallet…"
+                        : phase === "done"
+                          ? "Swapped"
+                          : "Check this swap"}
+              </button>
+            )}
+            {phase === "confirm" && prepared && coversPayment && checkout && (
+              <button className="primary" disabled={!signTransaction} onClick={() => void swapAndPay()}>
+                Swap and pay {groupDigits(rawToUi(checkout.rawAmount, props.targetDecimals))}{" "}
+                {props.targetSymbol} in one transaction
               </button>
             )}
             {phase === "confirm" && prepared && (
               <button className="quiet" disabled={!signTransaction} onClick={() => void signAndSend()}>
-                Confirm: receive{" "}
+                {coversPayment ? "Swap only: receive " : "Confirm: receive "}
                 {groupDigits(rawToUi(prepared.expectedOutRaw, props.targetDecimals))}{" "}
                 {props.targetSymbol}
               </button>
