@@ -1,10 +1,10 @@
 # Cookie Tab
 
-Payment links and tip jars on Cookie Chain.
+Invoices and tip jars on Cookie Chain that a payer can settle from the token they actually hold.
 
-Fill in a form and you get a short link and a QR code. Whoever opens it connects a wallet and pays you in COOK or any Cookie Chain token. Both sides get a receipt on chain, and the jar page lists every payment that has arrived.
+Fill in a form and you get a short link and a QR code, priced in a token or in dollars. Whoever opens it connects a wallet and pays. A payer holding the wrong token gets Cookiebox and Candy Shop quoted, the winning route checked against their own balances, and the swap and the payment signed as one transaction. An invoice reference goes on chain with the payment, so the jar can say whether that invoice is paid, and hand out a receipt page anyone can verify. An agent on cookie-mcp can pay the same link with one `transfer` call.
 
-Cookie Tab has no backend. The payment request is carried inside the link, and the history is read back out of the chain.
+Cookie Tab has no backend, holds no keys and takes no fee. The payment request travels inside the link, and the history is read back out of the chain.
 
 ## Making a request and getting paid
 
