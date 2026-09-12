@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { displayAmount, groupDigits, isRounded, rawToUi, uiToRaw } from "./format";
 import { usdToRaw, rawToUsd } from "./quote";
 import {
+  agentPayload,
   buildMemo,
   decodeRequest,
   encodeRequest,
@@ -176,6 +177,27 @@ describe("memos", () => {
   it("ignores a memo written by something else", () => {
     expect(parseMemo("gm")).toBeNull();
     expect(parseMemo("cookiejar:2|a|b")).toBeNull();
+  });
+});
+
+describe("the request as an agent's transfer call", () => {
+  it("is the cookie-mcp transfer shape with the memo already built, no mint for COOK", () => {
+    const payload = agentPayload({ to: "baker.cook", ref: "INV-7", note: "sesame", amount: "25000" }, "25000");
+    expect(payload).toEqual({
+      tool: "transfer",
+      to: "baker.cook",
+      amount: "25000",
+      memo: "cookiejar:1|INV-7|sesame",
+    });
+    expect("mint" in payload).toBe(false);
+  });
+
+  it("names the mint for a token request and takes the amount the page priced", () => {
+    const mint = "GNFqCqaU9R2jas4iaKEFZM5hiX5AHxBL7rPHTCpX5T6z";
+    const payload = agentPayload({ to: "baker.cook", mint, decimals: 6, usd: "5.00" }, "1234.5");
+    expect(payload.mint).toBe(mint);
+    expect(payload.amount).toBe("1234.5");
+    expect(payload.memo).toBe("cookiejar:1||");
   });
 });
 

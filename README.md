@@ -16,6 +16,8 @@ Get paid. The Pay page decodes the link, resolves the name against the CookOven 
 
 Read the jar. The Jar page lists what arrived, totalled by token, with a link to each transaction on Cookiescan.
 
+Pay from an agent. The link, the memo and the transaction are documented in [docs/wire-format.md](docs/wire-format.md), and the Pay page offers the request as one `transfer` call for an agent on [cookie-mcp](https://github.com/cookiechain/cookie-mcp), memo included, so an agent's payment lands in the jar like any other.
+
 Settle a reference. A request made with an invoice reference is answered by the same jar narrowed to that reference: `#/jar/<recipient>?ref=<reference>` says whether a payment carrying it has arrived, how much, and in which transaction. The payer gets that link on the paid screen as the receipt; the recipient can hand it to anyone who asks. Opening a referenced link a second time says the reference has already been paid, or part-paid, before the button is offered — paying again is still allowed, as a choice. A reference is text anyone can put in a memo, so the transaction link is the evidence, and the page can only see what the RPC still holds, which is roughly the last ten days.
 
 ## How it works on chain
