@@ -21,7 +21,7 @@ import { COOK_MINT, MEMO_PROGRAM_ID } from "./config";
 /**
  * Building the payment. Two shapes, one memo: a native COOK payment is a system transfer, a token
  * payment is a checked SPL transfer with an idempotent create for the recipient's token account.
- * The memo instruction is what turns a transfer into a Cookie Jar receipt — it is the only reason a
+ * The memo instruction is what turns a transfer into a Cookie Tab receipt — it is the only reason a
  * jar's history can be rebuilt from chain data with no server involved.
  */
 

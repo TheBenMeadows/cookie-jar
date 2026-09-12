@@ -36,7 +36,7 @@ describe("the app renders", () => {
 
   it("shows the reference page", async () => {
     renderAt("#/about");
-    expect(await screen.findByText("How Cookie Jar works")).toBeDefined();
+    expect(await screen.findByText("How Cookie Tab works")).toBeDefined();
     // Shortened on screen, with the whole key still reachable for anyone comparing one.
     const memo = screen.getByTitle("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
     expect(memo.textContent).toBe("MemoSq…GmfcHr");

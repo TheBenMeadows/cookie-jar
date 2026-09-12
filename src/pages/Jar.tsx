@@ -244,8 +244,8 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
       ) : (
         <>
           <p>
-            No Cookie Jar payments were found in the transactions this RPC still holds for this address.
-            A transfer to this address without a Cookie Jar memo is not shown here. A public Cookie Chain
+            No Cookie Tab payments were found in the transactions this RPC still holds for this address.
+            A transfer to this address without a Cookie Tab memo is not shown here. A public Cookie Chain
             node keeps roughly the last ten days; older payments are on chain but not in its index.
           </p>
           <p>

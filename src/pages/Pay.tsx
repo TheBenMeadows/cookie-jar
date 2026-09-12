@@ -497,7 +497,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
         </p>
       )}
 
-      {resolved && <p className="small">Cookie Jar never holds the money.</p>}
+      {resolved && <p className="small">Cookie Tab never holds the money.</p>}
     </>
   );
 }

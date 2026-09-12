@@ -15,7 +15,7 @@ import {
 import { fetchToken } from "../lib/tokens";
 
 /**
- * The swap step, for a payer who holds the wrong token. Cookie Jar quotes both Cookie Chain
+ * The swap step, for a payer who holds the wrong token. Cookie Tab quotes both Cookie Chain
  * aggregators and hands the winning route to the payer's own wallet to sign — the funds never pass
  * through this app, and a swap is a separate transaction from the payment, so a payer can stop after
  * either one.

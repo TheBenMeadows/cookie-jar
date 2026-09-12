@@ -18,7 +18,7 @@ export const CANDYSHOP_API = envUrl("VITE_CANDYSHOP_API_URL", "https://swap.cook
 export const EXPLORER_URL = envUrl("VITE_COOKIE_EXPLORER_URL", "https://cookiescan.io");
 
 /** Where the source lives. Set `VITE_REPO_URL` at build time once the repository exists. */
-export const REPO_URL = envUrl("VITE_REPO_URL", "https://github.com/TheBenMeadows/cookie-jar");
+export const REPO_URL = envUrl("VITE_REPO_URL", "https://github.com/TheBenMeadows/cookie-tab");
 
 /**
  * Where a payer without COOK goes to get some: the Hyperlane warp route between Solana mainnet and
@@ -38,7 +38,7 @@ export const COOK_SYMBOL = "COOK";
 /** Fee charged per signature, in COOK. One signature per payment, so this is the whole cost. */
 export const FEE_PER_SIGNATURE_COOK = 0.000005;
 
-/** SPL Memo v2. Every Cookie Jar payment carries one, which is what makes a jar readable from chain. */
+/** SPL Memo v2. Every Cookie Tab payment carries one, which is what makes a jar readable from chain. */
 export const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 
 /** CookOven `.cook` name registry. A single deployment; the dApp is client-side, so there is no API. */

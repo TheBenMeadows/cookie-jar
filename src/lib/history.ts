@@ -8,7 +8,7 @@ import { MEMO_PREFIX, parseMemo } from "./request";
 /**
  * A jar's history, rebuilt from chain data alone. No database and no indexer: `getSignaturesForAddress`
  * lists what touched an address, and each transaction's own balance deltas say what arrived. The
- * memo is the filter — a transfer without the Cookie Jar prefix was not a Cookie Jar payment, and is
+ * memo is the filter — a transfer without the Cookie Tab prefix was not a Cookie Tab payment, and is
  * left out rather than guessed at.
  *
  * A jar is more than one address. Native COOK lands on the wallet, but an SPL transfer lands on a
@@ -33,7 +33,7 @@ const BATCH = 25;
 
 /**
  * Reads every Memo-program instruction in a transaction and returns the first memo that parses
- * as a Cookie Jar payment. A wallet or relayer memo earlier in the transaction is ignored.
+ * as a Cookie Tab payment. A wallet or relayer memo earlier in the transaction is ignored.
  */
 function memoText(tx: ParsedTransactionWithMeta): string | null {
   const memoProgram = MEMO_PROGRAM_ID.toBase58();
@@ -187,7 +187,7 @@ async function jarAddresses(connection: Connection, jar: PublicKey): Promise<Pub
 }
 
 /**
- * Read Cookie Jar payments into `jar`, paging back through the signatures of every address it owns
+ * Read Cookie Tab payments into `jar`, paging back through the signatures of every address it owns
  * until `limit` payments are found or `SCAN_CAP` signatures have been read across all of them.
  *
  * Paging matters on an address that does anything besides receive payments: without it a jar with
@@ -244,7 +244,7 @@ export async function fetchJarHistory(
       scan.before = page[page.length - 1]?.signature;
       for (const entry of page) {
         if (entry.err !== null) continue;
-        // The RPC summarises a transaction's memos here, so a transaction with no Cookie Jar memo
+        // The RPC summarises a transaction's memos here, so a transaction with no Cookie Tab memo
         // can be skipped without fetching it. A null summary means "not reported", not "no memo".
         if (entry.memo !== null && entry.memo !== undefined && !entry.memo.includes(MEMO_PREFIX)) {
           continue;

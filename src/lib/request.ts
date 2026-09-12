@@ -6,7 +6,7 @@ import { uiToRaw } from "./format";
 import { looksLikeName, nameError, normalizeName } from "./names";
 
 /**
- * A payment request. Everything a payer needs travels inside the link, so Cookie Jar stores nothing
+ * A payment request. Everything a payer needs travels inside the link, so Cookie Tab stores nothing
  * and a link keeps working whether or not this app is still hosted anywhere.
  *
  * `amount` and `usd` are alternatives: `amount` fixes the token amount, `usd` fixes the dollar value
@@ -42,7 +42,7 @@ export const MAX_NOTE_LENGTH = 180;
 export const MAX_REF_LENGTH = 40;
 export const MAX_SYMBOL_LENGTH = 12;
 
-/** Every Cookie Jar payment memo starts with this, which is what makes a jar readable from chain. */
+/** Every Cookie Tab payment memo starts with this, which is what makes a jar readable from chain. */
 export const MEMO_PREFIX = "cookiejar:1";
 
 export class RequestError extends Error {}
@@ -193,7 +193,7 @@ export function decodeRequest(encoded: string): PaymentRequest {
   const wire = parsed as Partial<WireRequest>;
   if (wire.v !== WIRE_VERSION) {
     throw new RequestError(
-      `this link was made by a newer version of Cookie Jar (format ${String(wire.v)})`,
+      `this link was made by a newer version of Cookie Tab (format ${String(wire.v)})`,
     );
   }
   if (typeof wire.to !== "string") throw new RequestError("this payment link names no recipient");
@@ -239,7 +239,7 @@ export interface ParsedMemo {
   note: string | null;
 }
 
-/** null when the memo was not written by Cookie Jar, which is how a jar filters other transfers. */
+/** null when the memo was not written by Cookie Tab, which is how a jar filters other transfers. */
 export function parseMemo(memo: string): ParsedMemo | null {
   if (!memo.startsWith(`${MEMO_PREFIX}|`)) return null;
   const rest = memo.slice(MEMO_PREFIX.length + 1);
