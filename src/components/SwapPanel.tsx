@@ -31,8 +31,10 @@ import { fetchToken } from "../lib/tokens";
 export interface Checkout {
   /** Base units of the target token the payer already holds and can spend. */
   heldRaw: bigint;
-  /** The whole payment, in base units of the target token. */
+  /** Everything the transaction takes from the payer in the target token: the payment plus any round-up. */
   rawAmount: bigint;
+  /** What the recipient alone receives, which is what the combined simulation is checked against. */
+  recipientRaw: bigint;
   /** The payment's instructions and where the money lands: the recipient's wallet, or their token account. */
   build: () => Promise<{
     instructions: TransactionInstruction[];
@@ -248,7 +250,7 @@ export function SwapPanel(props: Props): JSX.Element {
         transaction: composed.transaction,
         destination: payment.destination,
         native: payment.native,
-        rawAmount: checkout.rawAmount,
+        rawAmount: checkout.recipientRaw,
       });
       if (!check.ok) throw new Error(check.reason ?? "the combined transaction did not pass its checks");
 

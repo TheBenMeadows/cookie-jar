@@ -211,6 +211,7 @@ describe("swap and pay in one transaction", () => {
     return {
       heldRaw,
       rawAmount,
+      recipientRaw: rawAmount,
       build: vi.fn(async () => ({ instructions: [{}, {}] as never[], destination: OWNER, native: true })),
       onPaid: vi.fn<(signature: string) => void>(),
       onFailed: vi.fn<(signature: string, err: unknown) => void>(),

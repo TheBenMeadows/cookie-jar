@@ -8,10 +8,12 @@ import { WalletPicker } from "../components/WalletPicker";
 import { getConnection, signatureOutcome } from "../lib/chain";
 import {
   BRIDGE_URL,
+  COOKIE_JAR_TREASURY,
   COOK_DECIMALS,
   COOK_MINT,
   COOK_SYMBOL,
   FEE_PER_SIGNATURE_COOK,
+  ROUND_UP_BPS,
   explorerAddressUrl,
   explorerTxUrl,
 } from "../lib/config";
@@ -27,7 +29,7 @@ import {
   uiToRaw,
 } from "../lib/format";
 import { fetchJarHistory, type JarPayment } from "../lib/history";
-import { buildPayment, recipientAccountRent, simulatePayment } from "../lib/pay";
+import { buildPayment, recipientAccountRent, roundUpAmount, simulatePayment } from "../lib/pay";
 import { rawToUsd, usdToRaw } from "../lib/quote";
 import { settlementOf, type Settlement } from "../lib/reconcile";
 import {
@@ -76,6 +78,8 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   /** The jar's recent payments, read before the payer is asked to sign, when the link carries a reference. */
   const [jarPayments, setJarPayments] = useState<JarPayment[] | null>(null);
   const [receiptCopied, setReceiptCopied] = useState(false);
+  /** Whether the payer adds a share for the Cookie Jar treasury. Off until they tick it. */
+  const [roundUp, setRoundUp] = useState(false);
 
   const decimals = request ? tokenDecimals(request) : COOK_DECIMALS;
   // The link's ticker is attacker-controlled text and the registry's is read from the same mint the
@@ -167,10 +171,22 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
     return null;
   }, [request, decimals, priceUsd, enteredAmount]);
 
+  /** The payer's opt-in share for the Cookie Jar treasury, in base units of the same token. */
+  const roundUpRaw = useMemo(
+    () => (roundUp && rawAmount !== null ? roundUpAmount(rawAmount, ROUND_UP_BPS) : 0n),
+    [roundUp, rawAmount],
+  );
+  /** Everything this transaction takes from the payer in the payment token. */
+  const totalRaw = rawAmount === null ? null : rawAmount + roundUpRaw;
+  const roundUpTarget = useMemo(
+    () => (roundUpRaw > 0n ? { to: new PublicKey(COOKIE_JAR_TREASURY), rawAmount: roundUpRaw } : undefined),
+    [roundUpRaw],
+  );
+
   const shortfall = useMemo(() => {
-    if (rawAmount === null || holding === null) return null;
-    return holding.spendable < rawAmount ? rawAmount - holding.spendable : null;
-  }, [rawAmount, holding]);
+    if (totalRaw === null || holding === null) return null;
+    return holding.spendable < totalRaw ? totalRaw - holding.spendable : null;
+  }, [totalRaw, holding]);
 
   // A link with a reference can be opened twice, or forwarded to someone who has already paid it.
   // The jar is read for that reference before the button is offered, so a second payment is a
@@ -234,6 +250,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
         mint: request.mint,
         decimals,
         memo: buildMemo(request),
+        roundUp: roundUpTarget,
       });
 
       const outcome = await simulatePayment(connection, built.transaction);
@@ -266,7 +283,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
       setError(e instanceof Error ? e.message : String(e));
       setStage("ready");
     }
-  }, [request, resolved, publicKey, rawAmount, connection, decimals, signTransaction]);
+  }, [request, resolved, publicKey, rawAmount, roundUpTarget, connection, decimals, signTransaction]);
 
   /**
    * The payment as instructions, for the swap panel to put behind a swap in one transaction. Same
@@ -274,10 +291,13 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
    * it is what funds it, and the two are simulated together before the wallet sees them.
    */
   const checkout = useMemo((): Checkout | undefined => {
-    if (!request || !resolved || !publicKey || rawAmount === null || holding === null) return undefined;
+    if (!request || !resolved || !publicKey || rawAmount === null || totalRaw === null || holding === null) {
+      return undefined;
+    }
     return {
       heldRaw: holding.spendable,
-      rawAmount,
+      rawAmount: totalRaw,
+      recipientRaw: rawAmount,
       build: async () => {
         const current = await resolveRecipient(connection, request.to);
         if (!current.address.equals(resolved.address)) {
@@ -294,6 +314,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
           decimals,
           memo: buildMemo(request),
           assumeFunded: true,
+          roundUp: roundUpTarget,
         });
         const native = built.tokenProgramId === null;
         const destination = native
@@ -311,7 +332,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
         setStage("failed");
       },
     };
-  }, [request, resolved, publicKey, rawAmount, holding, connection, decimals, mint]);
+  }, [request, resolved, publicKey, rawAmount, totalRaw, roundUpTarget, holding, connection, decimals, mint]);
 
   if (stage === "reading" && !request) {
     return <p className="working">Reading the payment link…</p>;
@@ -396,6 +417,15 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
               {groupDigits(rawToUi(rawAmount ?? 0n, decimals))} {symbol}
             </dd>
           </div>
+          {roundUpRaw > 0n && (
+            <div className="row">
+              <dt>Cookie Jar</dt>
+              <dd className="mono tabular">
+                {groupDigits(rawToUi(roundUpRaw, decimals))} {symbol} to{" "}
+                <a href={jarUrl(COOKIE_JAR_TREASURY, origin)}>the community treasury</a>
+              </dd>
+            </div>
+          )}
           <div className="row">
             <dt>To</dt>
             <dd className="mono">{request.to}</dd>
@@ -534,6 +564,34 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
             )}
           </dd>
         </div>
+        {rawAmount !== null && (
+          <div className="row">
+            <dt>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={roundUp}
+                  onChange={(e) => setRoundUp(e.target.checked)}
+                  disabled={stage === "sending"}
+                />{" "}
+                Cookie Jar
+              </label>
+            </dt>
+            <dd className="tabular">
+              {roundUp ? (
+                <>
+                  +{displayAmount(roundUpRaw, decimals)} {symbol} to the community treasury,{" "}
+                  <a href={explorerAddressUrl(COOKIE_JAR_TREASURY)} className="mono">
+                    {shortAddress(COOKIE_JAR_TREASURY, 6, 4)}
+                  </a>
+                  , in the same transaction
+                </>
+              ) : (
+                `add ${ROUND_UP_BPS / 100}% for the community treasury`
+              )}
+            </dd>
+          </div>
+        )}
         {holding !== null && (
           <div className="row">
             <dt>You can send</dt>

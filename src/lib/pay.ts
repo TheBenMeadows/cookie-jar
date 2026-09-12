@@ -56,6 +56,21 @@ export interface BuildPaymentArgs {
    * that account before the transfer runs, and the whole thing is simulated together afterwards.
    */
   assumeFunded?: boolean;
+  /**
+   * A second transfer of the same token, in the same transaction, to another wallet — the payer's
+   * opt-in share for the Cookie Jar treasury. It rides under the same memo, so the treasury's own
+   * jar page lists the gift the way the recipient's lists the payment.
+   */
+  roundUp?: { to: PublicKey; rawAmount: bigint };
+}
+
+/** The share a payer adds on top of `rawAmount` at `bps` basis points; zero for a zero payment. */
+export function roundUpAmount(rawAmount: bigint, bps: number): bigint {
+  if (rawAmount <= 0n || bps <= 0) return 0n;
+  const share = (rawAmount * BigInt(bps)) / 10_000n;
+  // A payment too small for its share to be a whole base unit still gives one, so opting in is
+  // never silently nothing.
+  return share > 0n ? share : 1n;
 }
 
 export interface BuiltPayment {
@@ -155,6 +170,11 @@ export async function buildPayment(args: BuildPaymentArgs): Promise<BuiltPayment
   let createsRecipientAccount = false;
   let tokenProgramId: PublicKey | null = null;
 
+  const roundUp = args.roundUp && args.roundUp.rawAmount > 0n ? args.roundUp : null;
+  if (roundUp && roundUp.to.equals(recipient)) {
+    throw new PaymentError("the round-up would go to the same wallet as the payment");
+  }
+
   if (isNative) {
     transaction.add(
       SystemProgram.transfer({
@@ -163,6 +183,11 @@ export async function buildPayment(args: BuildPaymentArgs): Promise<BuiltPayment
         lamports: rawAmount,
       }),
     );
+    if (roundUp) {
+      transaction.add(
+        SystemProgram.transfer({ fromPubkey: payer, toPubkey: roundUp.to, lamports: roundUp.rawAmount }),
+      );
+    }
   } else {
     const mint = new PublicKey(args.mint as string);
     const facts = await fetchMintFacts(connection, mint);
@@ -207,6 +232,31 @@ export async function buildPayment(args: BuildPaymentArgs): Promise<BuiltPayment
         tokenProgramId,
       ),
     );
+
+    if (roundUp) {
+      // The same shape as the payment: an idempotent create names the treasury wallet among the
+      // account keys, which is what lets its jar find the gift.
+      const roundUpDestination = getAssociatedTokenAddressSync(mint, roundUp.to, true, tokenProgramId);
+      transaction.add(
+        createAssociatedTokenAccountIdempotentInstruction(
+          payer,
+          roundUpDestination,
+          roundUp.to,
+          mint,
+          tokenProgramId,
+        ),
+        createTransferCheckedInstruction(
+          source,
+          mint,
+          roundUpDestination,
+          payer,
+          roundUp.rawAmount,
+          decimals,
+          [],
+          tokenProgramId,
+        ),
+      );
+    }
   }
 
   transaction.add(memoInstruction(memo, payer));

@@ -17,10 +17,12 @@ import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { getConnection } from "../src/lib/chain";
 import {
   BRIDGE_URL,
+  COOKIE_JAR_TREASURY,
   COOK_DECIMALS,
   COOK_MINT,
   COOK_SYMBOL,
   MEMO_PROGRAM_ID,
+  ROUND_UP_BPS,
   RPC_URL,
 } from "../src/lib/config";
 import { fetchDomain, resolveRecipient } from "../src/lib/domains";
@@ -32,7 +34,7 @@ import {
   lookupTablesOf,
   verifyComposedCheckout,
 } from "../src/lib/checkout";
-import { buildPayment, simulatePayment } from "../src/lib/pay";
+import { buildPayment, roundUpAmount, simulatePayment } from "../src/lib/pay";
 import { usdToRaw } from "../src/lib/quote";
 import { settlementOf } from "../src/lib/reconcile";
 import { buildMemo, decodeRequest, encodeRequest, parseMemo, type PaymentRequest } from "../src/lib/request";
@@ -243,6 +245,41 @@ async function main(): Promise<void> {
       "the memo program did not run",
     );
     return `1,000 ${COOK_SYMBOL} from ${payer.toBase58()}, ${outcome.logs.length} log lines, memo executed`;
+  });
+
+  await check("COOK payment with the Cookie Jar round-up simulates, and the treasury is a wallet", async () => {
+    // The treasury has to be an ordinary system-owned wallet, the same rule the app applies to a
+    // `.cook` name in escrow: a program-owned account would take the money where nobody can spend it.
+    const treasury = new PublicKey(COOKIE_JAR_TREASURY);
+    const info = await connection.getAccountInfo(treasury);
+    assert(info !== null, "the Cookie Jar treasury account does not exist on this chain");
+    assert(
+      info?.owner.equals(SystemProgram.programId) === true,
+      `the treasury is owned by ${info?.owner.toBase58()}, not the system program`,
+    );
+
+    const rawAmount = uiToRaw("1000", COOK_DECIMALS);
+    const share = roundUpAmount(rawAmount, ROUND_UP_BPS);
+    const payer = await findFundedWallet(rawAmount + share + 10_000_000n);
+    const { transaction } = await buildPayment({
+      connection,
+      payer,
+      recipient: SINK,
+      rawAmount,
+      decimals: COOK_DECIMALS,
+      memo: buildMemo({ to: SINK.toBase58(), note: "live check", ref: "LIVE-ROUNDUP" }),
+      roundUp: { to: treasury, rawAmount: share },
+    });
+    const before = BigInt(await connection.getBalance(treasury));
+    const simulation = await connection.simulateTransaction(transaction, undefined, [treasury]);
+    assert(!simulation.value.err, `simulation failed: ${JSON.stringify(simulation.value.err)}`);
+    const after = simulation.value.accounts?.[0]?.lamports;
+    assert(after !== undefined, "the simulation did not report the treasury's balance");
+    assert(
+      BigInt(after ?? 0) - before === share,
+      `the treasury would gain ${BigInt(after ?? 0) - before} lamports rather than ${share}`,
+    );
+    return `treasury ${COOKIE_JAR_TREASURY} is system-owned holding ${rawToUi(BigInt(info?.lamports ?? 0), COOK_DECIMALS)} ${COOK_SYMBOL}; 1,000 ${COOK_SYMBOL} + ${rawToUi(share, COOK_DECIMALS)} ${COOK_SYMBOL} round-up simulates, treasury gains exactly the share`;
   });
 
   await check("COOK payment from an unfunded payer fails on funds alone", async () => {
