@@ -12,7 +12,7 @@ Create a request. Pick a recipient (a Cookie Chain address or a CookOven `.cook`
 
 Share the link. The request is encoded as base64url JSON in the URL fragment after `#/pay/`. A fragment is never sent to a server, so the request does not appear in this app's logs, in a CDN's, or in a referrer header. The same string is also rendered as a QR code.
 
-Get paid. The Pay page decodes the link, resolves the name against the CookOven registry, shows the amount and its dollar value, and builds one transaction. The payer's wallet signs it and sends it. A payer holding the wrong token can swap first, in the same page, through the Cookie Chain aggregators.
+Get paid. The Pay page decodes the link, resolves the name against the CookOven registry, shows the amount and its dollar value, and builds one transaction. The payer's wallet signs it, and the page sends the signed transaction to the Cookie Chain RPC itself: a wallet asked to send would broadcast it on Solana mainnet, because the wallet-standard adapter maps any RPC host it does not know to mainnet. A payer holding the wrong token can swap first, in the same page, through the Cookie Chain aggregators.
 
 Read the jar. The Jar page lists what arrived, totalled by token, with a link to each transaction on Cookiescan.
 

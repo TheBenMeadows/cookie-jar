@@ -46,7 +46,7 @@ interface Resolved {
 }
 
 export function Pay({ payload }: { payload: string }): JSX.Element {
-  const { publicKey, sendTransaction, connected, disconnect } = useWallet();
+  const { publicKey, signTransaction, connected, disconnect } = useWallet();
   const connection = useMemo(() => getConnection(), []);
   const origin = useMemo(
     () => window.location.origin + window.location.pathname.replace(/index\.html$/, ""),
@@ -213,7 +213,12 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
       const fresh = await connection.getLatestBlockhash("confirmed");
       built.transaction.recentBlockhash = fresh.blockhash;
 
-      const sent = await sendTransaction(built.transaction, connection);
+      // The wallet only signs. Asked to send, the wallet-standard adapter maps an RPC host it does
+      // not recognise to Solana mainnet and has the wallet broadcast there, where this blockhash
+      // does not exist; so the signed bytes go to the Cookie Chain RPC from here instead.
+      if (!signTransaction) throw new Error("this wallet cannot sign transactions");
+      const signed = await signTransaction(built.transaction);
+      const sent = await connection.sendRawTransaction(signed.serialize());
       const confirmation = await connection.confirmTransaction(
         {
           signature: sent,
@@ -235,7 +240,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
       setError(e instanceof Error ? e.message : String(e));
       setStage("ready");
     }
-  }, [request, resolved, publicKey, rawAmount, connection, decimals, sendTransaction]);
+  }, [request, resolved, publicKey, rawAmount, connection, decimals, signTransaction]);
 
   if (stage === "reading" && !request) {
     return <p className="working">Reading the payment link…</p>;
