@@ -285,11 +285,52 @@ const TOKEN_ACCOUNT_AMOUNT_OFFSET = 64;
 const NATIVE_OVERHEAD_ALLOWANCE = 10_000_000n;
 
 /**
- * How many accounts one `simulateTransaction` call will report back. An account that is not reported
- * cannot be compared, so a wallet with more token accounts than fit alongside the owner is refused
- * rather than checked with the rest of its holdings invisible.
+ * How many accounts one `simulateTransaction` call will report back on the Cookie Chain RPC
+ * (measured: "Too many accounts provided; max 17"). The owner takes one slot in every call, so a
+ * wallet with more token accounts than fit is checked across several simulations of the same
+ * transaction rather than refused, or checked with part of its holdings invisible. With the
+ * blockhash replaced, every call runs against the same state and reports the same outcome.
  */
-const SIMULATION_ACCOUNT_LIMIT = 60;
+const SIMULATION_ACCOUNT_LIMIT = 17;
+
+/** The token accounts one simulation watches, leaving a slot for the owner. */
+const WATCH_CHUNK = SIMULATION_ACCOUNT_LIMIT - 1;
+
+/**
+ * Simulate once per chunk of watched accounts, the owner in every call, and return the reported
+ * accounts in `watched` order followed by the owner's, or the first simulation failure.
+ */
+async function simulateWatching(
+  connection: Connection,
+  transaction: VersionedTransaction,
+  watched: PublicKey[],
+  owner: PublicKey,
+): Promise<
+  | { err: null; accounts: (SimulatedAccount | null)[]; ownerAccount: SimulatedAccount | null }
+  | { err: unknown; logs: string[] }
+> {
+  const accounts: (SimulatedAccount | null)[] = [];
+  let ownerAccount: SimulatedAccount | null = null;
+  const chunks: PublicKey[][] = watched.length === 0 ? [[]] : [];
+  for (let i = 0; i < watched.length; i += WATCH_CHUNK) chunks.push(watched.slice(i, i + WATCH_CHUNK));
+  for (const chunk of chunks) {
+    const addresses = [...chunk.map((a) => a.toBase58()), owner.toBase58()];
+    const simulation = await connection.simulateTransaction(transaction, {
+      replaceRecentBlockhash: true,
+      sigVerify: false,
+      accounts: { encoding: "base64", addresses },
+    });
+    if (simulation.value.err) return { err: simulation.value.err, logs: simulation.value.logs ?? [] };
+    const post = simulation.value.accounts ?? [];
+    for (let j = 0; j < chunk.length; j += 1) accounts.push(post[j] ?? null);
+    ownerAccount = post[addresses.length - 1] ?? null;
+  }
+  return { err: null, accounts, ownerAccount };
+}
+
+type SimulatedAccount = NonNullable<
+  NonNullable<Awaited<ReturnType<Connection["simulateTransaction"]>>["value"]["accounts"]>[number]
+>;
 
 export interface SwapVerification {
   ok: boolean;
@@ -378,36 +419,28 @@ export async function verifySwapTransaction(args: {
     }
   }
 
-  if (watched.length + 1 > SIMULATION_ACCOUNT_LIMIT) {
-    return {
-      ok: false,
-      reason: `checking this swap means watching ${watched.length} token accounts, more than one simulation reports, so it cannot be checked here — swap at ${quote.swapUrl} instead, or move the spare accounts together first`,
-      expectedOutRaw: null,
-    };
-  }
-
   const lamportsBefore = BigInt(await connection.getBalance(owner));
 
-  const addresses = [...watched.map((w) => w.address.toBase58()), owner.toBase58()];
-  const simulation = await connection.simulateTransaction(transaction, {
-    replaceRecentBlockhash: true,
-    sigVerify: false,
-    accounts: { encoding: "base64", addresses },
-  });
+  const simulation = await simulateWatching(
+    connection,
+    transaction,
+    watched.map((w) => w.address),
+    owner,
+  );
 
-  if (simulation.value.err) {
+  if ("logs" in simulation) {
     return {
       ok: false,
-      reason: `the swap did not simulate: ${simulation.value.logs?.slice(-2).join(" | ") ?? JSON.stringify(simulation.value.err)}`,
+      reason: `the swap did not simulate: ${simulation.logs.slice(-2).join(" | ") || JSON.stringify(simulation.err)}`,
       expectedOutRaw: null,
     };
   }
 
-  const post = simulation.value.accounts ?? [];
+  const post = simulation.accounts;
   let outDelta: bigint | null = null;
   let inSpent = 0n;
 
-  for (let i = 0; i < watched.length && i < addresses.length; i += 1) {
+  for (let i = 0; i < watched.length; i += 1) {
     const entry = watched[i];
     const account = post[i];
     if (!entry) continue;
@@ -447,19 +480,31 @@ export async function verifySwapTransaction(args: {
     };
   }
 
-  const ownerAccount = post[addresses.length - 1];
+  const ownerAccount = simulation.ownerAccount;
   const lamportsAfter = ownerAccount ? BigInt(ownerAccount.lamports) : null;
+
+  const nativeIn = quote.inputMint === COOK_MINT;
 
   if (nativeOut) {
     // A native output arrives in the same balance the fee and any new account's rent come out of, so
     // the measurement is the plain difference and the allowance moves to the threshold below.
     if (lamportsAfter !== null) outDelta = lamportsAfter - lamportsBefore;
-  } else if (lamportsAfter !== null && lamportsAfter < lamportsBefore - NATIVE_OVERHEAD_ALLOWANCE) {
-    return {
-      ok: false,
-      reason: `this transaction also takes ${lamportsBefore - lamportsAfter} lamports out of this wallet, far past the fee and rent a swap needs, which the quote did not mention`,
-      expectedOutRaw: null,
-    };
+  } else if (lamportsAfter !== null) {
+    // Selling native COOK takes the quoted input out of this same balance, on top of fee and rent;
+    // anything past that is money the quote never mentioned. The temporary wrapped account a route
+    // opens and closes inside the transaction never shows up as a token account, so the lamports
+    // are the only place the input's departure can be measured.
+    const allowedDrop = (nativeIn ? inQuoted : 0n) + NATIVE_OVERHEAD_ALLOWANCE;
+    if (lamportsAfter < lamportsBefore - allowedDrop) {
+      const drop = lamportsBefore - lamportsAfter;
+      return {
+        ok: false,
+        reason: nativeIn
+          ? `this transaction takes ${drop} lamports out of this wallet; the quote was for ${inQuoted} plus fee and rent`
+          : `this transaction also takes ${drop} lamports out of this wallet, far past the fee and rent a swap needs, which the quote did not mention`,
+        expectedOutRaw: null,
+      };
+    }
   }
 
   const minOut = BigInt(quote.minOutAmount);

@@ -474,6 +474,37 @@ describe("a swap transaction is checked before a wallet sees it", () => {
     expect(result.reason).toMatch(/also takes 500000000 lamports/);
   });
 
+  it("lets a swap that sells native COOK spend the quoted lamports, and no more", async () => {
+    const nativeIn: SwapQuote = { ...QUOTE, inputMint: COOK_MINT, inAmount: "1000000000" };
+    const out = Keypair.generate().publicKey;
+    // The quoted input, fee and rent leave; the output arrives in a token account.
+    const fine = await verifySwapTransaction({
+      connection: swapConnection(
+        [{ pubkey: out, mint: MINT, before: 0n, after: 5000n }],
+        5_000_000_000n,
+        5_000_000_000n - 1_000_000_000n - 2_044_280n,
+      ),
+      transaction: transactionFrom(PAYER),
+      owner: PAYER,
+      quote: nativeIn,
+    });
+    expect(fine).toEqual({ ok: true, reason: null, expectedOutRaw: 5000n });
+
+    // Past the quoted input plus the allowance is a route helping itself.
+    const greedy = await verifySwapTransaction({
+      connection: swapConnection(
+        [{ pubkey: out, mint: MINT, before: 0n, after: 5000n }],
+        5_000_000_000n,
+        5_000_000_000n - 1_000_000_000n - 20_000_000n,
+      ),
+      transaction: transactionFrom(PAYER),
+      owner: PAYER,
+      quote: nativeIn,
+    });
+    expect(greedy.ok).toBe(false);
+    expect(greedy.reason).toMatch(/takes 1020000000 lamports out of this wallet; the quote was for 1000000000/);
+  });
+
   it("refuses a route that spends more of the input than the quote asked for", async () => {
     const out = Keypair.generate().publicKey;
     const inn = Keypair.generate().publicKey;
@@ -541,22 +572,48 @@ describe("a swap transaction is checked before a wallet sees it", () => {
     expect(tiny.expectedOutRaw).toBe(-5000n);
   });
 
-  it("refuses to verify a wallet with more token accounts than one simulation reports", async () => {
+  it("watches a wallet with more token accounts than one simulation reports, in chunks", async () => {
+    // The RPC reports at most 17 accounts per simulation. Sixty holdings plus the two derived
+    // output addresses are watched across four simulations, the owner in each, and nothing is
+    // left unwatched: a drain in the last chunk is still caught.
     const owned: Owned[] = Array.from({ length: 60 }, () => ({
       pubkey: Keypair.generate().publicKey,
       mint: OTHER_MINT,
       before: 10n,
       after: 10n,
     }));
-    const result = await verifySwapTransaction({
-      connection: swapConnection(owned),
+    const out = Keypair.generate().publicKey;
+    const clean = swapConnection([...owned, { pubkey: out, mint: MINT, before: 0n, after: 5000n }]);
+    const fine = await verifySwapTransaction({
+      connection: clean,
       transaction: transactionFrom(PAYER),
       owner: PAYER,
       quote: QUOTE,
     });
-    expect(result.ok).toBe(false);
-    // The two derived addresses for the output mint are part of what has to be watched.
-    expect(result.reason).toMatch(/watching 62 token accounts, more than one simulation reports/);
+    expect(fine).toEqual({ ok: true, reason: null, expectedOutRaw: 5000n });
+    const calls = (clean as unknown as { simulateTransaction: ReturnType<typeof vi.fn> })
+      .simulateTransaction.mock.calls as [unknown, { accounts: { addresses: string[] } }][];
+    expect(calls).toHaveLength(4);
+    for (const [, config] of calls) {
+      expect(config.accounts.addresses.length).toBeLessThanOrEqual(17);
+      expect(config.accounts.addresses.at(-1)).toBe(PAYER.toBase58());
+    }
+
+    // A token the quote never named, sitting in the last chunk, goes down.
+    const unrelated = Keypair.generate().publicKey;
+    const drained = swapConnection([
+      ...owned,
+      { pubkey: Keypair.generate().publicKey, mint: unrelated, before: 10n, after: 0n },
+      { pubkey: out, mint: MINT, before: 0n, after: 5000n },
+    ]);
+    const caught = await verifySwapTransaction({
+      connection: drained,
+      transaction: transactionFrom(PAYER),
+      owner: PAYER,
+      quote: QUOTE,
+    });
+    expect(caught.ok).toBe(false);
+    expect(caught.reason).toMatch(/also takes 10 base units/);
   });
 
   it("reads the output across accounts as a net figure", async () => {
