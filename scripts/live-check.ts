@@ -38,7 +38,13 @@ import { buildPayment, roundUpAmount, simulatePayment } from "../src/lib/pay";
 import { usdToRaw } from "../src/lib/quote";
 import { settlementOf } from "../src/lib/reconcile";
 import { buildMemo, decodeRequest, encodeRequest, parseMemo, type PaymentRequest } from "../src/lib/request";
-import { bestSwapQuote, buildSwapTransaction, quoteFrom, type SwapQuote } from "../src/lib/swap";
+import {
+  bestSwapQuote,
+  buildSwapTransaction,
+  quoteFrom,
+  verifySwapTransaction,
+  type SwapQuote,
+} from "../src/lib/swap";
 import { fetchCookPriceUsd, fetchToken, searchTokens } from "../src/lib/tokens";
 
 const connection = getConnection();
@@ -410,6 +416,26 @@ async function main(): Promise<void> {
       return `${rawToUi(rawAmount, holder.decimals)} TRASHCOIN → ${COOK_SYMBOL} for ${holder.owner.toBase58()}, unsigned, fee payer is the swapper`;
     });
   }
+
+  await check("a swap that sells native COOK passes verification for a funded wallet", async () => {
+    // The direction a first-time payer takes: COOK in, a token out. The input leaves the same
+    // balance the fee comes from, and verification has to allow exactly that and nothing more.
+    const rawAmount = uiToRaw("1", COOK_DECIMALS);
+    const payer = await findFundedWallet(rawAmount + 100_000_000n);
+    const quote = await bestSwapQuote({
+      inputMint: COOK_MINT,
+      outputMint: TRASHCOIN_MINT,
+      rawAmount: rawAmount.toString(),
+    });
+    assert(quote !== null, `no route for ${COOK_SYMBOL} → TRASHCOIN`);
+    const built = await buildSwapTransaction(quote as SwapQuote, payer.toBase58());
+    const transaction = VersionedTransaction.deserialize(
+      new Uint8Array(Buffer.from(built.transactionBase64, "base64")),
+    );
+    const check_ = await verifySwapTransaction({ connection, transaction, owner: payer, quote: quote as SwapQuote });
+    assert(check_.ok, check_.reason ?? "the swap was refused");
+    return `${quote?.aggregator}: 1 ${COOK_SYMBOL} → TRASHCOIN for ${payer.toBase58()} verified, simulation delivers ${check_.expectedOutRaw} base units`;
+  });
 
   for (const aggregator of ["cookiebox", "candyshop"] as const) {
     await check(`${aggregator} swap and a payment compose into one transaction`, async () => {
