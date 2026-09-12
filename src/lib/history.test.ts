@@ -196,7 +196,7 @@ describe("a jar reads its token accounts as well as its wallet", () => {
 });
 
 describe("a jar whose wallet holds far more history than the cap", () => {
-  /** Signatures that are not Cookie Jar payments: read, counted against the cap, never candidates. */
+  /** Signatures that are not Cookie Tab payments: read, counted against the cap, never candidates. */
   function noise(count: number): SignatureEntry[] {
     return Array.from({ length: count }, (_, i) => ({
       signature: `noise${i}`,

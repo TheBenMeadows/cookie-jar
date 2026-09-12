@@ -2,7 +2,7 @@ import { COOKIESCAN_API, COOK_DECIMALS, COOK_MINT, COOK_SYMBOL } from "./config"
 import { fetchJson } from "./http";
 
 /**
- * Cookiescan's token registry and price feed. Cookie Jar reads it for three things: the USD value of
+ * Cookiescan's token registry and price feed. Cookie Tab reads it for three things: the USD value of
  * an amount, the decimals of a token a merchant picks, and the ticker shown next to a number. None
  * of it is ever used for arithmetic on a transaction — decimals come from the registry, amounts come
  * from the payer, and both are converted with BigInt.

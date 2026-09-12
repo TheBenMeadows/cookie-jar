@@ -114,7 +114,7 @@ async function findTokenHolder(
 }
 
 async function main(): Promise<void> {
-  console.log(`Cookie Jar live checks — RPC ${RPC_URL}\n`);
+  console.log(`Cookie Tab live checks — RPC ${RPC_URL}\n`);
 
   await check("rpc reachable", async () => {
     const version = await connection.getVersion();
@@ -143,7 +143,7 @@ async function main(): Promise<void> {
     const parsedMemo = parseMemo(memo);
     assert(parsedMemo?.ref === "INV-0007", "the memo lost its reference");
     assert(parsedMemo?.note === "one dozen, sesame", "the memo lost its note");
-    assert(parseMemo("hello world") === null, "a foreign memo was read as a Cookie Jar payment");
+    assert(parseMemo("hello world") === null, "a foreign memo was read as a Cookie Tab payment");
 
     return `${encoded.length} characters, memo "${memo}"`;
   });
@@ -368,7 +368,7 @@ async function main(): Promise<void> {
   }
 
   await check("jar history reads from chain", async () => {
-    // Read against the memo program rather than a jar: every Cookie Jar payment on the chain calls
+    // Read against the memo program rather than a jar: every Cookie Tab payment on the chain calls
     // it, so it is the one address with activity inside the RPC's window on any day this runs. What
     // is being checked is the read path — that signatures come back and parse — not a balance.
     const history = await fetchJarHistory(connection, MEMO_PROGRAM_ID, 20);
@@ -401,7 +401,7 @@ async function main(): Promise<void> {
       searchTransactionHistory: true,
     });
     if (status.value[0] === null) {
-      return `${DEMO_JAR}: ${history.payments.length} Cookie Jar payments in ${history.scanned} signatures scanned; the demo payment ${DEMO_PAYMENT.signature.slice(0, 10)}… is older than this RPC's retention window, so it cannot be listed`;
+      return `${DEMO_JAR}: ${history.payments.length} Cookie Tab payments in ${history.scanned} signatures scanned; the demo payment ${DEMO_PAYMENT.signature.slice(0, 10)}… is older than this RPC's retention window, so it cannot be listed`;
     }
     const known = history.payments.find((p) => p.signature === DEMO_PAYMENT.signature);
     assert(known !== undefined, `the jar did not list payment ${DEMO_PAYMENT.signature}`);
@@ -412,7 +412,7 @@ async function main(): Promise<void> {
     assert(known?.ref === DEMO_PAYMENT.ref, `that payment's reference came back as ${known?.ref}`);
     assert(known?.mint === COOK_MINT, `that payment came back against mint ${known?.mint}`);
 
-    return `${DEMO_JAR}: ${history.payments.length} Cookie Jar payments in ${history.scanned} signatures scanned (cap hit: ${history.hitCap}, stopped at limit: ${history.stoppedAtLimit}); ${groupDigits(rawToUi(known?.rawAmount ?? 0n, COOK_DECIMALS))} ${COOK_SYMBOL} ref ${known?.ref} from ${known?.from} reads back from ${DEMO_PAYMENT.signature.slice(0, 10)}…`;
+    return `${DEMO_JAR}: ${history.payments.length} Cookie Tab payments in ${history.scanned} signatures scanned (cap hit: ${history.hitCap}, stopped at limit: ${history.stoppedAtLimit}); ${groupDigits(rawToUi(known?.rawAmount ?? 0n, COOK_DECIMALS))} ${COOK_SYMBOL} ref ${known?.ref} from ${known?.from} reads back from ${DEMO_PAYMENT.signature.slice(0, 10)}…`;
   });
 
   await check("how far back a jar can see on this RPC", async () => {

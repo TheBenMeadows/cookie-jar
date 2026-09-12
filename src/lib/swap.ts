@@ -210,7 +210,7 @@ const BUILD_TIMEOUT_MS = 60_000;
 
 /**
  * Ask Cookiebox to build the swap. It re-quotes server-side and answers with an unsigned versioned
- * transaction whose fee payer is the payer's own wallet: Cookie Jar never holds the funds, never
+ * transaction whose fee payer is the payer's own wallet: Cookie Tab never holds the funds, never
  * signs, and never sees a key. The caller simulates it, has the wallet sign it, and sends it.
  */
 export async function buildCookieboxSwap(args: {

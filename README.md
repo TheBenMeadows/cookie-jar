@@ -1,10 +1,10 @@
-# Cookie Jar
+# Cookie Tab
 
 Payment links and tip jars on Cookie Chain.
 
 Fill in a form and you get a short link and a QR code. Whoever opens it connects a wallet and pays you in COOK or any Cookie Chain token. Both sides get a receipt on chain, and the jar page lists every payment that has arrived.
 
-Cookie Jar has no backend. The payment request is carried inside the link, and the history is read back out of the chain.
+Cookie Tab has no backend. The payment request is carried inside the link, and the history is read back out of the chain.
 
 ## Making a request and getting paid
 
@@ -12,7 +12,7 @@ Create a request. Pick a recipient (a Cookie Chain address or a CookOven `.cook`
 
 Share the link. The request is encoded as base64url JSON in the URL fragment after `#/pay/`. A fragment is never sent to a server, so the request does not appear in this app's logs, in a CDN's, or in a referrer header. The same string is also rendered as a QR code.
 
-Get paid. The Pay page decodes the link, resolves the name against the CookOven registry, shows the amount and its dollar value, and builds one transaction. The payer's wallet signs it and sends it. A payer holding the wrong token can swap first, in the same page, through the Cookie Chain aggregators.
+Get paid. The Pay page decodes the link, resolves the name against the CookOven registry, shows the amount and its dollar value, and builds one transaction. The payer's wallet signs it, and the page sends the signed transaction to the Cookie Chain RPC itself: a wallet asked to send would broadcast it on Solana mainnet, because the wallet-standard adapter maps any RPC host it does not know to mainnet. A payer holding the wrong token can swap first, in the same page, through the Cookie Chain aggregators.
 
 Read the jar. The Jar page lists what arrived, totalled by token, with a link to each transaction on Cookiescan.
 
@@ -30,9 +30,9 @@ A `.cook` name is read straight from the CookOven registry program. `resolveReci
 
 A dollar-quoted request is converted at the Cookiescan price when the payer opens the link, in the browser, and the token amount is shown before they sign. Nothing is pegged and nothing is escrowed. The conversion is fixed-point BigInt arithmetic throughout, because a COOK amount that fits an ordinary invoice already exceeds what a double holds at 9 decimals.
 
-The swap step asks both Cookie Chain aggregators for a route and keeps the larger output. Whichever one won then builds it (Cookiebox through `POST /swap-tx`, Candy Shop through `POST /swap-tx/multi-route`) and returns an unsigned versioned transaction whose fee payer is the payer's own wallet. Cookie Jar simulates it, the wallet signs it, and this page sends it. The funds never pass through the app, and the swap is a separate transaction from the payment, so a payer can stop after either one.
+The swap step asks both Cookie Chain aggregators for a route and keeps the larger output. Whichever one won then builds it (Cookiebox through `POST /swap-tx`, Candy Shop through `POST /swap-tx/multi-route`) and returns an unsigned versioned transaction whose fee payer is the payer's own wallet. Cookie Tab simulates it, the wallet signs it, and this page sends it. The funds never pass through the app, and the swap is a separate transaction from the payment, so a payer can stop after either one.
 
-Cookie Jar does not hold keys, does not take a fee, and does not deploy a program of its own.
+Cookie Tab does not hold keys, does not take a fee, and does not deploy a program of its own.
 
 ## Addresses and endpoints
 
@@ -50,7 +50,7 @@ Cookie Jar does not hold keys, does not take a fee, and does not deploy a progra
 | Explorer | `https://cookiescan.io` |
 | COOK bridge from Solana | `https://bridge.cookiescan.io` |
 
-Cookie Jar deploys no program and owns no address. It reads and writes only through the programs above.
+Cookie Tab deploys no program and owns no address. It reads and writes only through the programs above.
 
 ## Setup
 
@@ -121,9 +121,9 @@ Step 5 is the one that matters. It proves the history is rebuilt from chain data
 
 A jar sees only as far back as its RPC retains. `getSignaturesForAddress` can answer only for blocks the node still holds, and the public Cookie Chain endpoint keeps a rolling window: measured on 2026-09-08, `getFirstAvailableBlock` was 21,802,517 against slot 23,978,778, which is about 2.2 million slots, or roughly ten days. Payments older than the window are on chain but not in the index, and no client can list them from that endpoint. `npm run live` prints the current figure. An archival RPC set through `VITE_COOKIE_RPC_URL` sees further.
 
-Within the window, a jar pages back through the signatures of its wallet and of the token accounts it owns, a page at a time from each in turn, until it has 50 Cookie Jar payments or has read 1,000 signatures across all of those addresses. The page says which of the two stopped it: it shows the latest 50 when more payments remain to be read, and names the 1,000-signature cap when that ran out first. At most 30 token accounts are read alongside the wallet, the ones holding a balance first, because a wallet can carry hundreds of empty accounts left behind by airdrops and each one costs a request.
+Within the window, a jar pages back through the signatures of its wallet and of the token accounts it owns, a page at a time from each in turn, until it has 50 Cookie Tab payments or has read 1,000 signatures across all of those addresses. The page says which of the two stopped it: it shows the latest 50 when more payments remain to be read, and names the 1,000-signature cap when that ran out first. At most 30 token accounts are read alongside the wallet, the ones holding a balance first, because a wallet can carry hundreds of empty accounts left behind by airdrops and each one costs a request.
 
-A transfer to a jar's address without a Cookie Jar memo is left out. A jar lists Cookie Jar payments. Read the address on Cookiescan for a full account statement.
+A transfer to a jar's address without a Cookie Tab memo is left out. A jar lists Cookie Tab payments. Read the address on Cookiescan for a full account statement.
 
 A jar row records what the chain recorded, and nothing more. Anyone can send a jar a small amount with a memo that starts with `cookiejar:1` and a note of their choosing, and it appears in the history like any other payment. Every row links to its transaction on Cookiescan. Check the amount and the sender there before treating a row as a settled invoice.
 

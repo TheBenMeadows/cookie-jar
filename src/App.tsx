@@ -53,7 +53,7 @@ function Shell({ route }: { route: Route }): JSX.Element {
         <div className="page">
           <header className="masthead">
             <a className="wordmark" href="#/">
-              Cookie<span> Jar</span>
+              Cookie<span> Tab</span>
             </a>
             {!onPayPage && <WalletBar />}
           </header>

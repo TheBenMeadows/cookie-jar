@@ -34,7 +34,7 @@ function ProgramRow({ label, address }: { label: string; address: string }): JSX
 export function About(): JSX.Element {
   return (
     <>
-      <h1>How Cookie Jar works</h1>
+      <h1>How Cookie Tab works</h1>
       <p className="lede">
         A payment link carries the whole request. There is no account, no database, and no server
         holding anything on your behalf.
@@ -66,13 +66,13 @@ export function About(): JSX.Element {
       <p>
         A jar page lists what arrived. It calls{" "}
         <span className="mono">getSignaturesForAddress</span> on the recipient, reads each
-        transaction, and keeps the ones whose memo starts with the Cookie Jar prefix, taking the
+        transaction, and keeps the ones whose memo starts with the Cookie Tab prefix, taking the
         amount from the transaction's own balance changes. Nothing is indexed anywhere: point any
         Solana RPC client at Cookie Chain and you can rebuild the same list.
       </p>
       <p className="small">
-        Transfers to the same address that carry no Cookie Jar memo are left out. A jar shows Cookie
-        Jar payments, not a full account statement.
+        Transfers to the same address that carry no Cookie Tab memo are left out. A jar shows Cookie
+        Tab payments, not a full account statement.
       </p>
 
       <h2>Names</h2>
@@ -94,7 +94,7 @@ export function About(): JSX.Element {
         A payer who holds the wrong token gets a route from the Cookiebox and Candy Shop aggregators.
         The better of the two quotes wins. The swap is its own transaction, built by the aggregator,
         signed by the payer's wallet, and sent from this page — the funds never pass through Cookie
-        Jar.
+        Tab.
       </p>
 
       <h2>No COOK yet</h2>
@@ -126,7 +126,7 @@ export function About(): JSX.Element {
       </dl>
 
       <p className="small">
-        Cookie Jar holds no keys and takes no fee. Read the source before you trust it with an
+        Cookie Tab holds no keys and takes no fee. Read the source before you trust it with an
         invoice.
       </p>
     </>

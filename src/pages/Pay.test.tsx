@@ -14,7 +14,10 @@ const PAYER = new PublicKey("4GGk4vTDd1FCA4NHd62xcwcab86KAm6dFtG7zrGKSGUx");
 const TRASHCOIN = "GNFqCqaU9R2jas4iaKEFZM5hiX5AHxBL7rPHTCpX5T6z";
 
 const stubs = vi.hoisted(() => ({
-  sendTransaction: vi.fn(async () => "5SzTvsSQDq1PJyS5dR9hxYyTHrTQPJn9pQeSCHbdVMpU"),
+  /** The wallet signs and hands the transaction back; it never broadcasts. */
+  signTransaction: vi.fn(async (tx: unknown) => ({ ...(tx as object), serialize: () => new Uint8Array([1]) })),
+  /** This page broadcasts the signed bytes to the Cookie Chain RPC itself. */
+  sendRawTransaction: vi.fn(async () => "5SzTvsSQDq1PJyS5dR9hxYyTHrTQPJn9pQeSCHbdVMpU"),
   confirmTransaction: vi.fn(async () => ({ value: { err: null as unknown } })),
   fetchToken: vi.fn(async () => null as { symbol: string; priceUsd: number | null } | null),
   recipientAccountRent: vi.fn(async () => 0n),
@@ -24,15 +27,15 @@ vi.mock("@solana/wallet-adapter-react", () => ({
   useWallet: () => ({
     publicKey: PAYER,
     connected: true,
-    sendTransaction: stubs.sendTransaction,
     disconnect: vi.fn(),
-    signTransaction: vi.fn(),
+    signTransaction: stubs.signTransaction,
   }),
 }));
 
 vi.mock("../lib/chain", () => ({
   getConnection: () => ({
     confirmTransaction: stubs.confirmTransaction,
+    sendRawTransaction: stubs.sendRawTransaction,
     getLatestBlockhash: vi.fn(async () => ({ blockhash: "abc", lastValidBlockHeight: 1 })),
   }),
   waitForSignature: vi.fn(async () => undefined),
@@ -165,6 +168,20 @@ describe("a transaction that lands and fails on chain", () => {
 
     expect(await screen.findByText("Paid")).toBeDefined();
     expect(screen.queryByText("This payment failed on chain")).toBeNull();
+  });
+
+  it("has the wallet sign and broadcasts to the Cookie Chain RPC from the page", async () => {
+    const payload = encodeRequest({ to: RECIPIENT, label: "Invoice", amount: "10" });
+    render(<Pay payload={payload} />);
+
+    fireEvent.click(await screen.findByText("Pay 10 COOK"));
+    await screen.findByText("Paid");
+
+    // A wallet asked to send would broadcast on the chain it maps the RPC to, which for an
+    // unknown host is Solana mainnet. The signed bytes must reach this app's own connection.
+    expect(stubs.signTransaction).toHaveBeenCalledTimes(1);
+    expect(stubs.sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(stubs.sendRawTransaction).toHaveBeenCalledWith(new Uint8Array([1]));
   });
 });
 
