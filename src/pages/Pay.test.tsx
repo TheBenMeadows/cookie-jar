@@ -18,7 +18,8 @@ const stubs = vi.hoisted(() => ({
   signTransaction: vi.fn(async (tx: unknown) => ({ ...(tx as object), serialize: () => new Uint8Array([1]) })),
   /** This page broadcasts the signed bytes to the Cookie Chain RPC itself. */
   sendRawTransaction: vi.fn(async () => "5SzTvsSQDq1PJyS5dR9hxYyTHrTQPJn9pQeSCHbdVMpU"),
-  confirmTransaction: vi.fn(async () => ({ value: { err: null as unknown } })),
+  /** The HTTP status poll that stands in for a websocket this chain cannot serve. */
+  signatureOutcome: vi.fn(async () => ({ err: null as unknown })),
   fetchToken: vi.fn(async () => null as { symbol: string; priceUsd: number | null } | null),
   recipientAccountRent: vi.fn(async () => 0n),
 }));
@@ -34,10 +35,10 @@ vi.mock("@solana/wallet-adapter-react", () => ({
 
 vi.mock("../lib/chain", () => ({
   getConnection: () => ({
-    confirmTransaction: stubs.confirmTransaction,
     sendRawTransaction: stubs.sendRawTransaction,
     getLatestBlockhash: vi.fn(async () => ({ blockhash: "abc", lastValidBlockHeight: 1 })),
   }),
+  signatureOutcome: stubs.signatureOutcome,
   waitForSignature: vi.fn(async () => undefined),
 }));
 
@@ -80,7 +81,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   stubs.fetchToken.mockResolvedValue(null);
-  stubs.confirmTransaction.mockResolvedValue({ value: { err: null } });
+  stubs.signatureOutcome.mockResolvedValue({ err: null });
   stubs.recipientAccountRent.mockResolvedValue(0n);
 });
 
@@ -141,9 +142,7 @@ describe("the ticker beside the amount", () => {
 
 describe("a transaction that lands and fails on chain", () => {
   it("is reported as a failure, never as Paid", async () => {
-    stubs.confirmTransaction.mockResolvedValue({
-      value: { err: { InstructionError: [1, { Custom: 1 }] } },
-    });
+    stubs.signatureOutcome.mockResolvedValue({ err: { InstructionError: [1, { Custom: 1 }] } });
     const payload = encodeRequest({ to: RECIPIENT, label: "Invoice", amount: "10" });
     render(<Pay payload={payload} />);
 
