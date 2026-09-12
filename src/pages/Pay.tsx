@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { SwapPanel } from "../components/SwapPanel";
 import { WalletPicker } from "../components/WalletPicker";
-import { getConnection } from "../lib/chain";
+import { getConnection, signatureOutcome } from "../lib/chain";
 import {
   BRIDGE_URL,
   COOK_DECIMALS,
@@ -219,19 +219,14 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
       if (!signTransaction) throw new Error("this wallet cannot sign transactions");
       const signed = await signTransaction(built.transaction);
       const sent = await connection.sendRawTransaction(signed.serialize());
-      const confirmation = await connection.confirmTransaction(
-        {
-          signature: sent,
-          blockhash: fresh.blockhash,
-          lastValidBlockHeight: fresh.lastValidBlockHeight,
-        },
-        "confirmed",
-      );
       setSignature(sent);
+      // Confirmation is polled over HTTP (see `signatureOutcome`); this chain's websocket endpoint
+      // cannot be opened from a browser, so a subscription would never hear the signature.
+      const landed = await signatureOutcome(connection, sent);
       // A transaction can land on chain and still fail there. The signature is real either way, so it
       // is kept for the explorer link, but only a clean confirmation is a payment.
-      if (confirmation.value.err) {
-        setChainError(JSON.stringify(confirmation.value.err));
+      if (landed.err) {
+        setChainError(JSON.stringify(landed.err));
         setStage("failed");
         return;
       }
