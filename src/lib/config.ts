@@ -38,6 +38,16 @@ export const COOK_SYMBOL = "COOK";
 /** Fee charged per signature, in COOK. One signature per payment, so this is the whole cost. */
 export const FEE_PER_SIGNATURE_COOK = 0.000005;
 
+/**
+ * The Cookie Jar: Cookie Chain's community treasury, vault 1 of the community multisig
+ * (https://docs.cookiechain.wtf/cookie-jar). A plain system-owned wallet, so it can be paid like
+ * any other recipient. A payer can add a share of any payment to it, in the same transaction.
+ */
+export const COOKIE_JAR_TREASURY = "568tU9FMksJDxjkLBjWisSA4J4C5uPH87NCCkyREwrxe";
+
+/** The share a payer adds for the Cookie Jar when they opt in, in basis points. */
+export const ROUND_UP_BPS = 100;
+
 /** SPL Memo v2. Every Cookie Tab payment carries one, which is what makes a jar readable from chain. */
 export const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 

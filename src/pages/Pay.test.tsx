@@ -64,7 +64,8 @@ vi.mock("../lib/chain", () => ({
   waitForSignature: vi.fn(async () => undefined),
 }));
 
-vi.mock("../lib/pay", () => ({
+vi.mock("../lib/pay", async (importOriginal) => ({
+  roundUpAmount: (await importOriginal<typeof import("../lib/pay")>()).roundUpAmount,
   recipientAccountRent: stubs.recipientAccountRent,
   buildPayment: vi.fn(async () => ({
     transaction: {},
@@ -106,6 +107,45 @@ afterEach(() => {
   stubs.signatureOutcome.mockResolvedValue({ err: null });
   stubs.recipientAccountRent.mockResolvedValue(0n);
   stubs.fetchJarHistory.mockResolvedValue({ payments: [], scanned: 0, hitCap: false, stoppedAtLimit: false });
+});
+
+describe("the Cookie Jar round-up", () => {
+  it("is off until ticked, then adds 1% to the treasury in the same transaction", async () => {
+    const payload = encodeRequest({ to: RECIPIENT, label: "Invoice", amount: "25000" });
+    render(<Pay payload={payload} />);
+    await waitFor(() => expect(document.querySelector("button.primary")?.textContent).toBe("Pay 25,000 COOK"));
+    expect(screen.getByText(/add 1% for the community treasury/)).toBeDefined();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(screen.getByText(/\+250 COOK to the community treasury/)).toBeDefined();
+    expect(screen.getByText("568tU9…wrxe").getAttribute("href")).toContain(
+      "568tU9FMksJDxjkLBjWisSA4J4C5uPH87NCCkyREwrxe",
+    );
+
+    fireEvent.click(document.querySelector("button.primary") as HTMLButtonElement);
+    await screen.findByText("Paid");
+    const { buildPayment } = await import("../lib/pay");
+    const args = (buildPayment as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      rawAmount: bigint;
+      roundUp?: { to: { toBase58(): string }; rawAmount: bigint };
+    };
+    expect(args.rawAmount).toBe(25_000n * 10n ** 9n);
+    expect(args.roundUp?.rawAmount).toBe(250n * 10n ** 9n);
+    expect(args.roundUp?.to.toBase58()).toBe("568tU9FMksJDxjkLBjWisSA4J4C5uPH87NCCkyREwrxe");
+    expect(screen.getByText(/250 COOK to/)).toBeDefined();
+  });
+
+  it("sends no round-up when the box is left alone", async () => {
+    const payload = encodeRequest({ to: RECIPIENT, label: "Invoice", amount: "25000" });
+    render(<Pay payload={payload} />);
+    await waitFor(() => expect(document.querySelector("button.primary")?.textContent).toBe("Pay 25,000 COOK"));
+    fireEvent.click(document.querySelector("button.primary") as HTMLButtonElement);
+    await screen.findByText("Paid");
+    const { buildPayment } = await import("../lib/pay");
+    const args = (buildPayment as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { roundUp?: unknown };
+    expect(args.roundUp).toBeUndefined();
+    expect(screen.queryByText(/to the community treasury/)).toBeNull();
+  });
 });
 
 describe("a link that carries a reference", () => {

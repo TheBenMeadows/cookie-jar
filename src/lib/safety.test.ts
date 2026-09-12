@@ -1,18 +1,27 @@
-import { Keypair, PublicKey, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import {
+  Keypair,
+  PublicKey,
+  SystemInstruction,
+  SystemProgram,
+  TransactionMessage,
+  VersionedTransaction,
+} from "@solana/web3.js";
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { describe, expect, it, vi } from "vitest";
 
-import { COOK_MINT } from "./config";
+import { COOKIE_JAR_TREASURY, COOK_MINT, MEMO_PROGRAM_ID } from "./config";
 import {
   buildPayment,
   chooseSourceAccount,
   fetchMintFacts,
   PaymentError,
   recipientAccountRent,
+  roundUpAmount,
 } from "./pay";
 import { bestSwapQuote, verifySwapTransaction, type SwapQuote } from "./swap";
 
@@ -177,6 +186,107 @@ describe("the rent a payer spends opening the recipient's token account", () => 
 
   it("is zero when the account exists under Token-2022", async () => {
     expect(await recipientAccountRent(stub(ata2022), MINT, RECIPIENT)).toBe(0n);
+  });
+});
+
+describe("the Cookie Jar round-up", () => {
+  const TREASURY = new PublicKey(COOKIE_JAR_TREASURY);
+
+  it("is a whole-number share, never silently nothing", () => {
+    expect(roundUpAmount(1_000_000_000n, 100)).toBe(10_000_000n);
+    expect(roundUpAmount(10_000n, 100)).toBe(100n);
+    expect(roundUpAmount(50n, 100)).toBe(1n);
+    expect(roundUpAmount(0n, 100)).toBe(0n);
+    expect(roundUpAmount(1_000n, 0)).toBe(0n);
+  });
+
+  it("adds a second native transfer to the treasury under the one memo", async () => {
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: PublicKey.default.toBase58(), lastValidBlockHeight: 1 })),
+    } as never;
+    const built = await buildPayment({
+      connection,
+      payer: PAYER,
+      recipient: RECIPIENT,
+      rawAmount: 1_000_000_000n,
+      decimals: 9,
+      memo: "cookiejar:1|INV-1|",
+      roundUp: { to: TREASURY, rawAmount: 10_000_000n },
+    });
+    const programs = built.transaction.instructions.map((ix) => ix.programId.toBase58());
+    expect(programs).toEqual([
+      SystemProgram.programId.toBase58(),
+      SystemProgram.programId.toBase58(),
+      MEMO_PROGRAM_ID.toBase58(),
+    ]);
+    const second = built.transaction.instructions[1];
+    expect(second?.keys[1]?.pubkey.equals(TREASURY)).toBe(true);
+    expect(SystemInstruction.decodeTransfer(second as never).lamports).toBe(10_000_000n);
+  });
+
+  it("adds an idempotent create and a checked transfer for a token payment", async () => {
+    const connection = {
+      getAccountInfo: vi.fn(async (key: PublicKey) => {
+        if (key.equals(MINT)) return { owner: TOKEN_PROGRAM_ID, data: mintAccount(6) };
+        return null;
+      }),
+      getParsedTokenAccountsByOwner: vi.fn(async () => ({
+        value: [
+          {
+            pubkey: getAssociatedTokenAddressSync(MINT, PAYER, true, TOKEN_PROGRAM_ID),
+            account: { data: { parsed: { info: { tokenAmount: { amount: "1000000" } } } } },
+          },
+        ],
+      })),
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: PublicKey.default.toBase58(), lastValidBlockHeight: 1 })),
+    } as never;
+    const built = await buildPayment({
+      connection,
+      payer: PAYER,
+      recipient: RECIPIENT,
+      rawAmount: 1000n,
+      mint: MINT.toBase58(),
+      decimals: 6,
+      memo: "cookiejar:1|INV-1|",
+      roundUp: { to: TREASURY, rawAmount: 10n },
+    });
+    const programs = built.transaction.instructions.map((ix) => ix.programId.toBase58());
+    expect(programs).toEqual([
+      ASSOCIATED_TOKEN_PROGRAM_ID.toBase58(),
+      TOKEN_PROGRAM_ID.toBase58(),
+      ASSOCIATED_TOKEN_PROGRAM_ID.toBase58(),
+      TOKEN_PROGRAM_ID.toBase58(),
+      MEMO_PROGRAM_ID.toBase58(),
+    ]);
+    const keys = built.transaction.compileMessage().accountKeys.map((k) => k.toBase58());
+    expect(keys).toContain(TREASURY.toBase58());
+  });
+
+  it("is left out when its amount is zero, and refused when it targets the recipient", async () => {
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: PublicKey.default.toBase58(), lastValidBlockHeight: 1 })),
+    } as never;
+    const none = await buildPayment({
+      connection,
+      payer: PAYER,
+      recipient: RECIPIENT,
+      rawAmount: 1_000n,
+      decimals: 9,
+      memo: "cookiejar:1||",
+      roundUp: { to: TREASURY, rawAmount: 0n },
+    });
+    expect(none.transaction.instructions).toHaveLength(2);
+    await expect(
+      buildPayment({
+        connection,
+        payer: PAYER,
+        recipient: RECIPIENT,
+        rawAmount: 1_000n,
+        decimals: 9,
+        memo: "cookiejar:1||",
+        roundUp: { to: RECIPIENT, rawAmount: 10n },
+      }),
+    ).rejects.toThrow(/same wallet/);
   });
 });
 
