@@ -230,6 +230,33 @@ export function receiptUrl(recipient: string, ref: string, origin: string): stri
   return `${jarUrl(recipient, origin)}?ref=${encodeURIComponent(ref)}`;
 }
 
+// --- Agents ---------------------------------------------------------------------------------------
+
+/**
+ * The same request as one `transfer` call for an agent: the shape cookie-mcp's `transfer` tool
+ * takes (`to`, `mint`, `amount`, `memo`), with the memo already built, so an agent that can move
+ * funds on Cookie Chain can pay this link and land in the jar like any other payer. `amount` is in
+ * display units, as the tool expects; a dollar-priced request is quoted at the moment this is made.
+ */
+export interface AgentPayload {
+  tool: "transfer";
+  to: string;
+  mint?: string;
+  amount: string;
+  memo: string;
+}
+
+export function agentPayload(request: PaymentRequest, amount: string): AgentPayload {
+  const payload: AgentPayload = {
+    tool: "transfer",
+    to: request.to,
+    amount,
+    memo: buildMemo(request),
+  };
+  if (request.mint && request.mint !== COOK_MINT) payload.mint = request.mint;
+  return payload;
+}
+
 // --- Memos ----------------------------------------------------------------------------------------
 
 /**

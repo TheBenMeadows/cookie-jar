@@ -109,6 +109,22 @@ afterEach(() => {
   stubs.fetchJarHistory.mockResolvedValue({ payments: [], scanned: 0, hitCap: false, stoppedAtLimit: false });
 });
 
+describe("the request for an agent", () => {
+  it("is the transfer call with the memo, at the amount the page priced", async () => {
+    const payload = encodeRequest({ to: RECIPIENT, label: "Invoice", amount: "25000", ref: "INV-7", note: "sesame" });
+    render(<Pay payload={payload} />);
+    await waitFor(() => expect(document.querySelector("button.primary")?.textContent).toBe("Pay 25,000 COOK"));
+    expect(screen.getByText("For an agent")).toBeDefined();
+    const box = document.querySelector<HTMLInputElement>("details .linkbox input");
+    expect(JSON.parse(box?.value ?? "{}")).toEqual({
+      tool: "transfer",
+      to: RECIPIENT,
+      amount: "25000",
+      memo: "cookiejar:1|INV-7|sesame",
+    });
+  });
+});
+
 describe("the Cookie Jar round-up", () => {
   it("is off until ticked, then adds 1% to the treasury in the same transaction", async () => {
     const payload = encodeRequest({ to: RECIPIENT, label: "Invoice", amount: "25000" });

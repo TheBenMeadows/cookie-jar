@@ -33,6 +33,7 @@ import { buildPayment, recipientAccountRent, roundUpAmount, simulatePayment } fr
 import { rawToUsd, usdToRaw } from "../lib/quote";
 import { settlementOf, type Settlement } from "../lib/reconcile";
 import {
+  agentPayload,
   buildMemo,
   decodeRequest,
   isOpenAmount,
@@ -80,6 +81,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   const [receiptCopied, setReceiptCopied] = useState(false);
   /** Whether the payer adds a share for the Cookie Jar treasury. Off until they tick it. */
   const [roundUp, setRoundUp] = useState(false);
+  const [agentCopied, setAgentCopied] = useState(false);
 
   const decimals = request ? tokenDecimals(request) : COOK_DECIMALS;
   // The link's ticker is attacker-controlled text and the registry's is read from the same mint the
@@ -351,6 +353,8 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   }
 
   const usdValue = rawAmount !== null && priceUsd ? rawToUsd(rawAmount, priceUsd, decimals) : null;
+  /** The request as a cookie-mcp `transfer` call, at the amount this page has priced it. */
+  const agentJson = rawAmount === null ? "" : JSON.stringify(agentPayload(request, rawToUi(rawAmount, decimals)));
   /** The figure the transaction carries, to every decimal place the token has. */
   const exactAmount = groupDigits(rawToUi(rawAmount ?? 0n, decimals));
   const roundedHeadline = rawAmount !== null && isRounded(rawAmount, decimals);
@@ -676,6 +680,35 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
       )}
 
       {resolved && <p className="small">Cookie Tab never holds the money.</p>}
+
+      {rawAmount !== null && (
+        <details className="small">
+          <summary>For an agent</summary>
+          <p className="small">
+            This request as one <span className="mono">transfer</span> call for an agent on{" "}
+            <a href="https://github.com/cookiechain/cookie-mcp">cookie-mcp</a>: the memo is what puts
+            the payment in the jar. The format is in{" "}
+            <a href="https://github.com/TheBenMeadows/cookie-tab/blob/main/docs/wire-format.md">
+              docs/wire-format.md
+            </a>
+            .
+          </p>
+          <div className="linkbox">
+            <input type="text" readOnly value={agentJson} />
+            <button
+              type="button"
+              className="quiet"
+              onClick={() => {
+                void navigator.clipboard.writeText(agentJson);
+                setAgentCopied(true);
+                setTimeout(() => setAgentCopied(false), 2000);
+              }}
+            >
+              {agentCopied ? "Copied" : "Copy"}
+            </button>
+          </div>
+        </details>
+      )}
     </>
   );
 }
