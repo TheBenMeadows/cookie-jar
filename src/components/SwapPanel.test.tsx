@@ -19,6 +19,17 @@ const stubs = vi.hoisted(() => ({
   buildSwapTransaction: vi.fn(async (quote: { inAmount: string }) => ({
     transactionBase64: Buffer.from(`tx-for-${quote.inAmount}`).toString("base64"),
   })),
+  signatureOutcome: vi.fn(async () => ({ err: null as unknown })),
+  /** The composed transaction is labelled so a test can see it was the one signed. */
+  composeSwapAndPayment: vi.fn((args: { swap: { label: string }; payment: unknown[] }) => ({
+    ok: true as const,
+    bytes: 900,
+    transaction: {
+      label: `${args.swap.label}+pay(${args.payment.length})`,
+      serialize: () => new Uint8Array([2]),
+    },
+  })),
+  verifyComposedCheckout: vi.fn(async () => ({ ok: true, reason: null as string | null })),
 }));
 
 vi.mock("@solana/wallet-adapter-react", () => ({
@@ -26,8 +37,18 @@ vi.mock("@solana/wallet-adapter-react", () => ({
 }));
 
 vi.mock("../lib/chain", () => ({
-  getConnection: () => ({ sendRawTransaction: vi.fn(async () => "sig") }),
+  getConnection: () => ({
+    sendRawTransaction: vi.fn(async () => "sig"),
+    getLatestBlockhash: vi.fn(async () => ({ blockhash: "abc", lastValidBlockHeight: 1 })),
+  }),
   waitForSignature: vi.fn(async () => undefined),
+  signatureOutcome: stubs.signatureOutcome,
+}));
+
+vi.mock("../lib/checkout", () => ({
+  lookupTablesOf: vi.fn(async () => []),
+  composeSwapAndPayment: stubs.composeSwapAndPayment,
+  verifyComposedCheckout: stubs.verifyComposedCheckout,
 }));
 
 vi.mock("../lib/balances", () => ({
@@ -96,7 +117,9 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-async function prepareASwap(): Promise<HTMLInputElement> {
+type Checkout = NonNullable<Parameters<typeof SwapPanel>[0]["checkout"]>;
+
+async function prepareASwap(checkout?: Checkout): Promise<HTMLInputElement> {
   render(
     <SwapPanel
       owner={OWNER}
@@ -105,6 +128,7 @@ async function prepareASwap(): Promise<HTMLInputElement> {
       targetSymbol="COOK"
       shortfallRaw={5_000_000_000n}
       onSwapped={() => undefined}
+      checkout={checkout}
     />,
   );
 
@@ -119,7 +143,7 @@ async function prepareASwap(): Promise<HTMLInputElement> {
   fireEvent.click(screen.getByText("Get a quote"));
   await waitFor(() => screen.getByText("Check this swap"));
   fireEvent.click(screen.getByText("Check this swap"));
-  await waitFor(() => screen.getByText(/^Confirm: receive/));
+  await waitFor(() => screen.getByText(/^(Confirm|Swap only): receive/));
   return field;
 }
 
@@ -178,5 +202,75 @@ describe("a prepared swap belongs to the amount it was quoted for", () => {
 
     expect(screen.queryByText(/^Confirm: receive/)).toBeNull();
     expect(stubs.signTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("swap and pay in one transaction", () => {
+  // The quote stub returns 5× the input, so 100 in → 500 COOK out, against a 5 COOK payment.
+  function checkoutFor(rawAmount: bigint, heldRaw = 0n) {
+    return {
+      heldRaw,
+      rawAmount,
+      build: vi.fn(async () => ({ instructions: [{}, {}] as never[], destination: OWNER, native: true })),
+      onPaid: vi.fn<(signature: string) => void>(),
+      onFailed: vi.fn<(signature: string, err: unknown) => void>(),
+    } satisfies Checkout;
+  }
+
+  it("is offered when the swap covers the payment, and signs the composed transaction", async () => {
+    const checkout = checkoutFor(5_000_000_000n);
+    await prepareASwap(checkout);
+
+    const button = screen.getByText(/^Swap and pay 5 COOK in one transaction/);
+    expect(screen.getByText(/^Swap only: receive/)).toBeDefined();
+    fireEvent.click(button);
+
+    await waitFor(() => expect(checkout.onPaid).toHaveBeenCalledWith("sig"));
+    expect(stubs.verifyComposedCheckout).toHaveBeenCalledTimes(1);
+    expect(stubs.signTransaction).toHaveBeenCalledTimes(1);
+    expect((stubs.signTransaction.mock.calls[0]?.[0] as { label: string }).label).toBe(
+      "tx-for-100000000000+pay(2)",
+    );
+    expect(checkout.onFailed).not.toHaveBeenCalled();
+  });
+
+  it("is not offered when the swap plus what is held falls short of the payment", async () => {
+    await prepareASwap(checkoutFor(10n ** 15n));
+    expect(screen.queryByText(/in one transaction/)).toBeNull();
+    expect(screen.getByText(/^Confirm: receive/)).toBeDefined();
+  });
+
+  it("withdraws the offer and keeps the swap-only path when the two do not fit one transaction", async () => {
+    stubs.composeSwapAndPayment.mockReturnValueOnce({ ok: false, reason: "too-big", bytes: 1247 } as never);
+    const checkout = checkoutFor(5_000_000_000n);
+    await prepareASwap(checkout);
+    fireEvent.click(screen.getByText(/^Swap and pay/));
+
+    await waitFor(() => screen.getByText(/do not fit in one transaction \(1247 bytes\)/));
+    expect(screen.queryByText(/^Swap and pay/)).toBeNull();
+    expect(screen.getByText(/^Confirm: receive/)).toBeDefined();
+    expect(stubs.signTransaction).not.toHaveBeenCalled();
+    expect(checkout.onPaid).not.toHaveBeenCalled();
+  });
+
+  it("does not sign when the composed transaction fails its check", async () => {
+    stubs.verifyComposedCheckout.mockResolvedValueOnce({ ok: false, reason: "the recipient would receive 1 base units rather than the 5000000000 requested" });
+    const checkout = checkoutFor(5_000_000_000n);
+    await prepareASwap(checkout);
+    fireEvent.click(screen.getByText(/^Swap and pay/));
+
+    await waitFor(() => screen.getByText(/would receive 1 base units/));
+    expect(stubs.signTransaction).not.toHaveBeenCalled();
+    expect(screen.getByText(/^Swap and pay/)).toBeDefined();
+  });
+
+  it("reports a composed transaction that lands and fails on chain as a failure", async () => {
+    stubs.signatureOutcome.mockResolvedValueOnce({ err: { InstructionError: [7, "Custom"] } });
+    const checkout = checkoutFor(5_000_000_000n);
+    await prepareASwap(checkout);
+    fireEvent.click(screen.getByText(/^Swap and pay/));
+
+    await waitFor(() => expect(checkout.onFailed).toHaveBeenCalledWith("sig", { InstructionError: [7, "Custom"] }));
+    expect(checkout.onPaid).not.toHaveBeenCalled();
   });
 });

@@ -26,6 +26,12 @@ import {
 import { fetchDomain, resolveRecipient } from "../src/lib/domains";
 import { groupDigits, rawToUi, uiToRaw } from "../src/lib/format";
 import { fetchJarHistory } from "../src/lib/history";
+import {
+  MAX_TRANSACTION_BYTES,
+  composeSwapAndPayment,
+  lookupTablesOf,
+  verifyComposedCheckout,
+} from "../src/lib/checkout";
 import { buildPayment, simulatePayment } from "../src/lib/pay";
 import { usdToRaw } from "../src/lib/quote";
 import { settlementOf } from "../src/lib/reconcile";
@@ -365,6 +371,58 @@ async function main(): Promise<void> {
         `the swap did not simulate: ${JSON.stringify(simulation.value.err)} ${simulation.value.logs?.slice(-3).join(" | ")}`,
       );
       return `${rawToUi(rawAmount, holder.decimals)} TRASHCOIN → ${COOK_SYMBOL} for ${holder.owner.toBase58()}, unsigned, fee payer is the swapper`;
+    });
+  }
+
+  for (const aggregator of ["cookiebox", "candyshop"] as const) {
+    await check(`${aggregator} swap and a payment compose into one transaction`, async () => {
+      // The one-signature checkout: the router's swap with a COOK payment behind it, recompiled as
+      // one message and simulated together. The recipient is the demo jar and the amount is the
+      // route's worst case, so the payment is covered by the swap alone.
+      const mint = new PublicKey(TRASHCOIN_MINT);
+      const holder = await findTokenHolder(mint);
+      const rawAmount = holder.raw / 1000n > 0n ? holder.raw / 1000n : 1n;
+      const quote = await quoteFrom(aggregator, {
+        inputMint: TRASHCOIN_MINT,
+        outputMint: COOK_MINT,
+        rawAmount: rawAmount.toString(),
+      });
+      assert(quote !== null, `${aggregator} found no route for TRASHCOIN → ${COOK_SYMBOL}`);
+      const built = await buildSwapTransaction(quote as SwapQuote, holder.owner.toBase58());
+      const swap = VersionedTransaction.deserialize(
+        new Uint8Array(Buffer.from(built.transactionBase64, "base64")),
+      );
+      const payment = await buildPayment({
+        connection,
+        payer: holder.owner,
+        recipient: new PublicKey(DEMO_JAR),
+        rawAmount: BigInt((quote as SwapQuote).minOutAmount),
+        decimals: COOK_DECIMALS,
+        memo: buildMemo({ to: DEMO_JAR, ref: "LIVE-CHECK", note: "composed swap and payment" }),
+        assumeFunded: true,
+      });
+      const tables = await lookupTablesOf(connection, swap);
+      const composed = composeSwapAndPayment({
+        swap,
+        lookupTables: tables,
+        payment: payment.transaction.instructions,
+        payer: holder.owner,
+        blockhash: payment.blockhash,
+      });
+      if (!composed.ok) {
+        // A route too long to share a transaction with the payment is the documented case the
+        // two-step checkout exists for; what matters is that it was refused rather than sent.
+        return `${aggregator} route ${quote?.venues.join(" → ")}: ${composed.bytes ?? "over"} bytes with the payment, past the ${MAX_TRANSACTION_BYTES}-byte limit, so this pair falls back to swap-then-pay`;
+      }
+      const check_ = await verifyComposedCheckout({
+        connection,
+        transaction: composed.transaction,
+        destination: new PublicKey(DEMO_JAR),
+        native: true,
+        rawAmount: BigInt((quote as SwapQuote).minOutAmount),
+      });
+      assert(check_.ok, check_.reason ?? "the composed transaction failed its check");
+      return `${aggregator} route ${quote?.venues.join(" → ")}: ${composed.bytes} bytes, ${composed.transaction.message.compiledInstructions.length} instructions, one signer; simulated together, the demo jar receives exactly ${rawToUi(BigInt((quote as SwapQuote).minOutAmount), COOK_DECIMALS)} ${COOK_SYMBOL}`;
     });
   }
 
