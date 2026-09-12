@@ -28,6 +28,7 @@ import { groupDigits, rawToUi, uiToRaw } from "../src/lib/format";
 import { fetchJarHistory } from "../src/lib/history";
 import { buildPayment, simulatePayment } from "../src/lib/pay";
 import { usdToRaw } from "../src/lib/quote";
+import { settlementOf } from "../src/lib/reconcile";
 import { buildMemo, decodeRequest, encodeRequest, parseMemo, type PaymentRequest } from "../src/lib/request";
 import { bestSwapQuote, buildSwapTransaction, quoteFrom, type SwapQuote } from "../src/lib/swap";
 import { fetchCookPriceUsd, fetchToken, searchTokens } from "../src/lib/tokens";
@@ -413,6 +414,27 @@ async function main(): Promise<void> {
     assert(known?.mint === COOK_MINT, `that payment came back against mint ${known?.mint}`);
 
     return `${DEMO_JAR}: ${history.payments.length} Cookie Tab payments in ${history.scanned} signatures scanned (cap hit: ${history.hitCap}, stopped at limit: ${history.stoppedAtLimit}); ${groupDigits(rawToUi(known?.rawAmount ?? 0n, COOK_DECIMALS))} ${COOK_SYMBOL} ref ${known?.ref} from ${known?.from} reads back from ${DEMO_PAYMENT.signature.slice(0, 10)}…`;
+  });
+
+  await check("a reference settles against the demo jar", async () => {
+    // The receipt page and the already-paid notice both rest on this: the jar's payments, filtered
+    // by the reference the memo carries, judged against the amount the request asked for.
+    const history = await fetchJarHistory(connection, new PublicKey(DEMO_JAR), 50);
+    const status = await connection.getSignatureStatuses([DEMO_PAYMENT.signature], {
+      searchTransactionHistory: true,
+    });
+    if (status.value[0] === null) {
+      const gone = settlementOf(history.payments, DEMO_PAYMENT.ref, COOK_MINT, DEMO_PAYMENT.rawAmount);
+      return `the demo payment is outside this RPC's retention window; ${DEMO_PAYMENT.ref} reads as ${gone.state}, which is the documented limit`;
+    }
+    const paid = settlementOf(history.payments, DEMO_PAYMENT.ref, COOK_MINT, DEMO_PAYMENT.rawAmount);
+    assert(paid.state === "paid", `${DEMO_PAYMENT.ref} reads as ${paid.state} with ${paid.paidRaw} base units`);
+    assert(paid.payments.length >= 1, `${DEMO_PAYMENT.ref} matched no payment`);
+    const partial = settlementOf(history.payments, DEMO_PAYMENT.ref, COOK_MINT, DEMO_PAYMENT.rawAmount * 2n);
+    assert(partial.state === "partial", `asked for double, ${DEMO_PAYMENT.ref} reads as ${partial.state}`);
+    const none = settlementOf(history.payments, "INV-NEVER-PAID", COOK_MINT, 1n);
+    assert(none.state === "unpaid" && none.payments.length === 0, "an unknown reference matched something");
+    return `${DEMO_PAYMENT.ref}: paid, ${groupDigits(rawToUi(paid.paidRaw, COOK_DECIMALS))} ${COOK_SYMBOL} across ${paid.payments.length} payment(s); partial when asked for double; INV-NEVER-PAID unpaid`;
   });
 
   await check("how far back a jar can see on this RPC", async () => {

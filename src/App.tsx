@@ -16,7 +16,7 @@ function Body(): JSX.Element {
     case "pay":
       return <Pay payload={route.payload} />;
     case "jar":
-      return <Jar recipient={route.recipient} />;
+      return <Jar recipient={route.recipient} refFilter={route.ref} />;
     case "about":
       return <About />;
     default:

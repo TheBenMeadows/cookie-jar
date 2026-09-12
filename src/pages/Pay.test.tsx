@@ -22,6 +22,28 @@ const stubs = vi.hoisted(() => ({
   signatureOutcome: vi.fn(async () => ({ err: null as unknown })),
   fetchToken: vi.fn(async () => null as { symbol: string; priceUsd: number | null } | null),
   recipientAccountRent: vi.fn(async () => 0n),
+  /** The jar's recent payments, read when a link carries a reference. */
+  fetchJarHistory: vi.fn(async () => ({
+    payments: [] as {
+      signature: string;
+      blockTime: number | null;
+      from: string | null;
+      rawAmount: bigint;
+      mint: string;
+      decimals: number;
+      symbol: string;
+      ref: string | null;
+      note: string | null;
+    }[],
+    scanned: 0,
+    hitCap: false,
+    stoppedAtLimit: false,
+  })),
+}));
+
+vi.mock("../lib/history", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/history")>()),
+  fetchJarHistory: stubs.fetchJarHistory,
 }));
 
 vi.mock("@solana/wallet-adapter-react", () => ({
@@ -83,6 +105,67 @@ afterEach(() => {
   stubs.fetchToken.mockResolvedValue(null);
   stubs.signatureOutcome.mockResolvedValue({ err: null });
   stubs.recipientAccountRent.mockResolvedValue(0n);
+  stubs.fetchJarHistory.mockResolvedValue({ payments: [], scanned: 0, hitCap: false, stoppedAtLimit: false });
+});
+
+describe("a link that carries a reference", () => {
+  const paid = {
+    signature: "3hE4kQz9m1yV8cJ2pXw7nLtR5dS6fG1hA2bC3dE4fG5hJ6kL7mN8pQ9rS1tU2vW3xY4zA5bC6dE7fG8h",
+    blockTime: 1_757_000_000,
+    from: PAYER.toBase58(),
+    rawAmount: 25_000n * 10n ** 9n,
+    mint: "So11111111111111111111111111111111111111112",
+    decimals: 9,
+    symbol: "COOK",
+    ref: "INV-7",
+    note: null,
+  };
+
+  it("says so before the button when the jar already holds a payment under it", async () => {
+    stubs.fetchJarHistory.mockResolvedValue({ payments: [paid], scanned: 1, hitCap: false, stoppedAtLimit: false });
+    const payload = encodeRequest({ to: RECIPIENT, label: "Invoice", amount: "25000", ref: "INV-7" });
+    render(<Pay payload={payload} />);
+
+    expect(await screen.findByText("Invoice")).toBeDefined();
+    const notice = await screen.findByText(/has already been paid to this jar/);
+    expect(notice.textContent).toContain("Paying again sends a second payment");
+    expect(document.querySelector("button.primary")?.textContent).toBe("Pay 25,000 COOK again");
+    // The jar was read for this recipient once, not once per render.
+    expect(stubs.fetchJarHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a part payment against the amount the link asks for", async () => {
+    stubs.fetchJarHistory.mockResolvedValue({
+      payments: [{ ...paid, rawAmount: 10_000n * 10n ** 9n }],
+      scanned: 1,
+      hitCap: false,
+      stoppedAtLimit: false,
+    });
+    const payload = encodeRequest({ to: RECIPIENT, label: "Invoice", amount: "25000", ref: "INV-7" });
+    render(<Pay payload={payload} />);
+
+    const notice = await screen.findByText(/has been part-paid/);
+    expect(notice.textContent).toContain("10,000 of 25,000 COOK has arrived");
+    expect(document.querySelector("button.primary")?.textContent).toBe("Pay 25,000 COOK");
+  });
+
+  it("offers a receipt link after paying, narrowed to the reference", async () => {
+    const payload = encodeRequest({ to: RECIPIENT, label: "Invoice", amount: "25000", ref: "INV-7" });
+    render(<Pay payload={payload} />);
+    await waitFor(() => expect(document.querySelector("button.primary")?.textContent).toBe("Pay 25,000 COOK"));
+    fireEvent.click(document.querySelector("button.primary") as HTMLButtonElement);
+
+    expect(await screen.findByText("Receipt")).toBeDefined();
+    const box = document.querySelector<HTMLInputElement>(".linkbox input");
+    expect(box?.value).toContain(`#/jar/${RECIPIENT}?ref=INV-7`);
+  });
+
+  it("reads nothing from the jar when the link carries no reference", async () => {
+    const payload = encodeRequest({ to: RECIPIENT, label: "Tip", amount: "5" });
+    render(<Pay payload={payload} />);
+    await waitFor(() => expect(document.querySelector("button.primary")?.textContent).toBe("Pay 5 COOK"));
+    expect(stubs.fetchJarHistory).not.toHaveBeenCalled();
+  });
 });
 
 describe("an amount the headline has to round", () => {

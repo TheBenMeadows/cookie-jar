@@ -222,6 +222,14 @@ export function jarUrl(recipient: string, origin: string): string {
   return `${origin.replace(/\/$/, "")}/#/jar/${encodeURIComponent(recipient)}`;
 }
 
+/**
+ * The jar narrowed to one reference: a page anyone can open to see whether an invoice was paid,
+ * rebuilt from chain data alone. Given to the payer after paying and to the recipient on the jar.
+ */
+export function receiptUrl(recipient: string, ref: string, origin: string): string {
+  return `${jarUrl(recipient, origin)}?ref=${encodeURIComponent(ref)}`;
+}
+
 // --- Memos ----------------------------------------------------------------------------------------
 
 /**
