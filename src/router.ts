@@ -9,15 +9,31 @@ import { useEffect, useState } from "react";
 export type Route =
   | { name: "create" }
   | { name: "pay"; payload: string }
-  | { name: "jar"; recipient: string }
+  | { name: "jar"; recipient: string; ref: string | null }
   | { name: "about" };
+
+/**
+ * A jar route can carry a query after the recipient: `#/jar/<recipient>?ref=<reference>` narrows
+ * the page to the payments carrying that reference. The query lives inside the fragment, so it
+ * never reaches a server either.
+ */
+function splitQuery(tail: string): { path: string; params: URLSearchParams } {
+  const cut = tail.indexOf("?");
+  if (cut < 0) return { path: tail, params: new URLSearchParams() };
+  return { path: tail.slice(0, cut), params: new URLSearchParams(tail.slice(cut + 1)) };
+}
 
 export function parseHash(hash: string): Route {
   const path = hash.replace(/^#\/?/, "");
   const [head = "", ...rest] = path.split("/");
   const tail = rest.join("/");
   if (head === "pay" && tail) return { name: "pay", payload: tail };
-  if (head === "jar" && tail) return { name: "jar", recipient: decodeURIComponent(tail) };
+  if (head === "jar" && tail) {
+    const { path: recipient, params } = splitQuery(tail);
+    if (!recipient) return { name: "create" };
+    const ref = params.get("ref")?.trim() || null;
+    return { name: "jar", recipient: decodeURIComponent(recipient), ref };
+  }
   if (head === "about") return { name: "about" };
   return { name: "create" };
 }

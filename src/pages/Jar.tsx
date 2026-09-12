@@ -13,7 +13,8 @@ import {
 import { fetchToken } from "../lib/tokens";
 import { explorerAddressUrl, explorerTxUrl, COOK_MINT, COOK_SYMBOL } from "../lib/config";
 import { formatTimestamp, groupDigits, rawToUi, shortAddress } from "../lib/format";
-import { jarUrl } from "../lib/request";
+import { paymentsForRef } from "../lib/reconcile";
+import { jarUrl, receiptUrl } from "../lib/request";
 import { Qr } from "../components/Qr";
 
 interface ResolvedRecipient {
@@ -24,9 +25,16 @@ interface ResolvedRecipient {
 /**
  * Public jar history page.
  * Resolves recipient name or address, fetches on-chain payment history, displays total receipts,
- * and renders individual memo-tagged payments.
+ * and renders individual memo-tagged payments. With `refFilter` set the page answers one question
+ * first — was the request carrying that reference paid — from the same chain data.
  */
-export function Jar({ recipient }: { recipient: string }): JSX.Element {
+export function Jar({
+  recipient,
+  refFilter = null,
+}: {
+  recipient: string;
+  refFilter?: string | null;
+}): JSX.Element {
   const connection = useMemo(() => getConnection(), []);
   const [resolved, setResolved] = useState<ResolvedRecipient | null>(null);
   const [payments, setPayments] = useState<JarPayment[] | null>(null);
@@ -183,6 +191,8 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
 
   const totalPaymentsCount = payments.length;
   const totalTokensCount = totals.length;
+  const matching = refFilter ? paymentsForRef(payments, refFilter) : [];
+  const matchingTotals = refFilter ? totalsByToken(matching) : [];
 
   return (
     <>
@@ -195,6 +205,74 @@ export function Jar({ recipient }: { recipient: string }): JSX.Element {
           {addressCopied ? "Copied" : "Copy the full key"}
         </button>
       </p>
+
+      {refFilter && (
+        <>
+          <p className={matching.length > 0 ? "stamp" : "stamp stopped"}>
+            {matching.length > 0 ? "Paid" : "Not paid"}
+          </p>
+          <h2>
+            Reference <span className="mono">{refFilter}</span>
+          </h2>
+          {matching.length > 0 ? (
+            <>
+              {matchingTotals.map((t) => (
+                <div className="amount" key={t.mint}>
+                  <span>{groupDigits(rawToUi(t.raw, t.decimals))}</span>
+                  <span className="unit">{getSymbol(t.mint, t.symbol)}</span>
+                </div>
+              ))}
+              <p className="small">
+                {matching.length === 1
+                  ? "One payment carrying this reference reached this jar."
+                  : `${matching.length} payments carrying this reference reached this jar.`}{" "}
+                A reference is text anyone can put in a memo; the transaction link is the evidence.
+              </p>
+              <div className="rows">
+                {matching.map((p) => (
+                  <div className="row" key={`ref:${p.signature}:${p.mint}`}>
+                    <div className="k">
+                      <div>{formatTimestamp(p.blockTime)}</div>
+                      {p.note && <div>{p.note}</div>}
+                    </div>
+                    <div className="v">
+                      <div>
+                        {groupDigits(rawToUi(p.rawAmount, p.decimals))} {getSymbol(p.mint, p.symbol)}
+                      </div>
+                      {p.from && <div>From: {shortAddress(p.from)}</div>}
+                      <div>
+                        <a href={explorerTxUrl(p.signature)} className="mono">
+                          {shortAddress(p.signature, 8, 6)}
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="small">
+              No payment carrying this reference is in the transactions this RPC still holds for
+              this jar. A public Cookie Chain node keeps roughly the last ten days, so an older
+              payment is on chain but not readable here.
+            </p>
+          )}
+          <div className="linkbox">
+            <input type="text" readOnly value={receiptUrl(recipient, refFilter, origin)} />
+            <button
+              type="button"
+              className="quiet"
+              onClick={() => void navigator.clipboard.writeText(receiptUrl(recipient, refFilter, origin))}
+            >
+              Copy
+            </button>
+          </div>
+          <p className="small">
+            <a href={jarUrl(recipient, origin)}>Every payment into this jar</a>
+          </p>
+          <hr className="perf" />
+        </>
+      )}
 
       {totals.map((t) => (
         <div className="amount" key={t.mint}>

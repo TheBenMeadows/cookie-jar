@@ -25,13 +25,16 @@ import {
   shortAddress,
   uiToRaw,
 } from "../lib/format";
+import { fetchJarHistory, type JarPayment } from "../lib/history";
 import { buildPayment, recipientAccountRent, simulatePayment } from "../lib/pay";
 import { rawToUsd, usdToRaw } from "../lib/quote";
+import { settlementOf, type Settlement } from "../lib/reconcile";
 import {
   buildMemo,
   decodeRequest,
   isOpenAmount,
   jarUrl,
+  receiptUrl,
   tokenDecimals,
   tokenSymbol,
   type PaymentRequest,
@@ -69,6 +72,9 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   /** Bumped after a swap so the balance below the amount is re-read. */
   const [balanceEpoch, setBalanceEpoch] = useState(0);
   const [picking, setPicking] = useState(false);
+  /** The jar's recent payments, read before the payer is asked to sign, when the link carries a reference. */
+  const [jarPayments, setJarPayments] = useState<JarPayment[] | null>(null);
+  const [receiptCopied, setReceiptCopied] = useState(false);
 
   const decimals = request ? tokenDecimals(request) : COOK_DECIMALS;
   // The link's ticker is attacker-controlled text and the registry's is read from the same mint the
@@ -164,6 +170,30 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
     if (rawAmount === null || holding === null) return null;
     return holding.spendable < rawAmount ? rawAmount - holding.spendable : null;
   }, [rawAmount, holding]);
+
+  // A link with a reference can be opened twice, or forwarded to someone who has already paid it.
+  // The jar is read for that reference before the button is offered, so a second payment is a
+  // choice rather than an accident. A read that fails says nothing either way and is dropped.
+  const hasRef = Boolean(request?.ref);
+  useEffect(() => {
+    setJarPayments(null);
+    if (!hasRef || !resolved) return;
+    let live = true;
+    fetchJarHistory(connection, resolved.address, 50)
+      .then((history) => {
+        if (live) setJarPayments(history.payments);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [hasRef, resolved, connection]);
+
+  /** What the jar already holds under this link's reference, against what the link asks for. */
+  const settlement = useMemo((): Settlement | null => {
+    if (!jarPayments || !request?.ref) return null;
+    return settlementOf(jarPayments, request.ref, mint, rawAmount ?? 0n);
+  }, [jarPayments, request, mint, rawAmount]);
 
   /**
    * Why this payment cannot go, in the words the button wears. A recipient that failed to resolve
@@ -347,6 +377,28 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
           The memo on this transaction is what puts it in the jar's history. Anyone can read it back
           from the chain, with or without this app.
         </p>
+        {request.ref ? (
+          <>
+            <h2>Receipt</h2>
+            <p className="small">
+              A page anyone can open to see this reference paid, rebuilt from the chain each time.
+            </p>
+            <div className="linkbox">
+              <input type="text" readOnly value={receiptUrl(request.to, request.ref, origin)} />
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => {
+                  void navigator.clipboard.writeText(receiptUrl(request.to, request.ref ?? "", origin));
+                  setReceiptCopied(true);
+                  setTimeout(() => setReceiptCopied(false), 2000);
+                }}
+              >
+                {receiptCopied ? "Copied" : "Copy"}
+              </button>
+            </div>
+          </>
+        ) : null}
         <p>
           <a href={jarUrl(request.to, origin)}>See this jar's history</a>
         </p>
@@ -451,13 +503,39 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
 
       {error && <p className="alarm">{error}</p>}
 
+      {settlement && settlement.state !== "unpaid" && request.ref && (
+        <p className="alarm">
+          {settlement.state === "paid"
+            ? `Reference ${request.ref} has already been paid to this jar`
+            : `Reference ${request.ref} has been part-paid: ${groupDigits(rawToUi(settlement.paidRaw, decimals))} of ${exactAmount} ${symbol} has arrived`}
+          {settlement.payments[0] ? (
+            <>
+              {" "}
+              (
+              <a href={explorerTxUrl(settlement.payments[0].signature)} className="mono">
+                {shortAddress(settlement.payments[0].signature, 8, 6)}
+              </a>
+              ). Paying again sends a second payment.
+            </>
+          ) : (
+            "."
+          )}{" "}
+          <a href={receiptUrl(request.to, request.ref, origin)}>See the receipt</a>
+        </p>
+      )}
+
       <p>
         <button
           className="primary"
           disabled={payBlocker !== null}
           onClick={() => (connected ? void pay() : setPicking(true))}
         >
-          {payBlocker ?? (connected ? `Pay ${exactAmount} ${symbol}` : "Connect a wallet to pay")}
+          {payBlocker ??
+            (connected
+              ? settlement?.state === "paid"
+                ? `Pay ${exactAmount} ${symbol} again`
+                : `Pay ${exactAmount} ${symbol}`
+              : "Connect a wallet to pay")}
         </button>
       </p>
 
