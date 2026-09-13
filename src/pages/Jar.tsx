@@ -228,7 +228,7 @@ export function Jar({
                   : `${matching.length} payments carrying this reference reached this jar.`}{" "}
                 A reference is text anyone can put in a memo; the transaction link is the evidence.
               </p>
-              <div className="rows">
+              <div className="rows stacked">
                 {matching.map((p) => (
                   <div className="row" key={`ref:${p.signature}:${p.mint}`}>
                     <div className="k">
@@ -296,7 +296,7 @@ export function Jar({
 
           <hr className="perf" />
 
-          <div className="rows">
+          <div className="rows stacked">
             {payments.map((p) => (
               <div className="row" key={`${p.signature}:${p.mint}`}>
                 <div className="k">
