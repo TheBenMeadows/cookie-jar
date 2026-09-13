@@ -495,7 +495,8 @@ button.link {
     display: block;
   }
 
-  .rows.stacked .row dd {
+  .rows.stacked .row dd,
+  .rows.stacked .row .v {
     text-align: left;
     margin-top: 0.15rem;
   }
