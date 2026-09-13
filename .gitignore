@@ -1,3 +1,6 @@
+# Both forms: the trailing slash alone does not match a symlink named node_modules, which is how
+# one got committed.
+node_modules
 node_modules/
 dist/
 .env
