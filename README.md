@@ -6,6 +6,13 @@ Fill in a form and you get a short link and a QR code, priced in a token or in d
 
 Cookie Tab has no backend, holds no keys and takes no fee. The payment request travels inside the link, and the history is read back out of the chain.
 
+Try it against the demo jar, which owns the CookOven name `cookietab.cook`:
+
+- the jar: https://cookie-tab.pages.dev/#/jar/cookietab.cook
+- one invoice's receipt, a swap and a payment that landed in a single transaction: https://cookie-tab.pages.dev/#/jar/cookietab.cook?ref=LANDING-COMPOSED
+
+Both resolve the name against the registry on every open, and read the payments from the chain.
+
 ![Making a link, opening it as the payer, and reading the jar back](docs/demo.gif)
 
 Every screen above is the live site at https://cookie-tab.pages.dev reading Cookie Chain, including the notice that the invoice reference has already been settled.
