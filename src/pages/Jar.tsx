@@ -13,7 +13,7 @@ import {
 import { fetchToken } from "../lib/tokens";
 import { explorerAddressUrl, explorerTxUrl, COOK_MINT, COOK_SYMBOL } from "../lib/config";
 import { formatTimestamp, groupDigits, rawToUi, shortAddress } from "../lib/format";
-import { paymentsForRef } from "../lib/reconcile";
+import { coversAbsence, paymentsForRef } from "../lib/reconcile";
 import { jarUrl, receiptUrl } from "../lib/request";
 import { Qr } from "../components/Qr";
 
@@ -39,6 +39,7 @@ export function Jar({
   const [resolved, setResolved] = useState<ResolvedRecipient | null>(null);
   const [payments, setPayments] = useState<JarPayment[] | null>(null);
   const [hitCap, setHitCap] = useState(false);
+  const [scanned, setScanned] = useState(0);
   const [stoppedAtLimit, setStoppedAtLimit] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +69,7 @@ export function Jar({
       const history = await fetchJarHistory(connection, res.address, 50);
       if (!live) return;
       setPayments(history.payments);
+      setScanned(history.scanned);
       setHitCap(history.hitCap);
       setStoppedAtLimit(history.stoppedAtLimit);
       setLoading(false);
@@ -192,6 +194,8 @@ export function Jar({
   const totalPaymentsCount = payments.length;
   const totalTokensCount = totals.length;
   const matching = refFilter ? paymentsForRef(payments, refFilter) : [];
+  /** Whether an absence of matching payments is evidence, or just the edge of what was read. */
+  const readToTheEnd = coversAbsence({ scanned, hitCap, stoppedAtLimit });
   const matchingTotals = refFilter ? totalsByToken(matching) : [];
 
   return (
@@ -209,7 +213,7 @@ export function Jar({
       {refFilter && (
         <>
           <p className={matching.length > 0 ? "stamp" : "stamp stopped"}>
-            {matching.length > 0 ? "Paid" : "Not paid"}
+            {matching.length > 0 ? "Paid" : readToTheEnd ? "Not paid" : "No record"}
           </p>
           <h2>
             Reference <span className="mono">{refFilter}</span>
@@ -252,9 +256,9 @@ export function Jar({
             </>
           ) : (
             <p className="small">
-              No payment carrying this reference is in the transactions this RPC still holds for
-              this jar. A public Cookie Chain node keeps roughly the last ten days, so an older
-              payment is on chain but not readable here.
+              {readToTheEnd
+                ? "No payment carrying this reference has reached this jar in everything this RPC holds for it."
+                : "No payment carrying this reference is in the part of this jar's history that could be read, so this is not an answer either way. A public Cookie Chain node keeps roughly the last ten days; a payment older than that is on chain and settled, and simply cannot be seen from here."}
             </p>
           )}
           <div className="linkbox">

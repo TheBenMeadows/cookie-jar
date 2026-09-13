@@ -28,7 +28,7 @@ import {
   shortAddress,
   uiToRaw,
 } from "../lib/format";
-import { fetchJarHistory, type JarPayment } from "../lib/history";
+import { fetchJarHistory, type JarHistory } from "../lib/history";
 import { buildPayment, recipientAccountRent, roundUpAmount, simulatePayment } from "../lib/pay";
 import { rawToUsd, usdToRaw } from "../lib/quote";
 import { settlementOf, type Settlement } from "../lib/reconcile";
@@ -77,7 +77,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   const [balanceEpoch, setBalanceEpoch] = useState(0);
   const [picking, setPicking] = useState(false);
   /** The jar's recent payments, read before the payer is asked to sign, when the link carries a reference. */
-  const [jarPayments, setJarPayments] = useState<JarPayment[] | null>(null);
+  const [jarHistory, setJarHistory] = useState<JarHistory | null>(null);
   const [receiptCopied, setReceiptCopied] = useState(false);
   /** Whether the payer adds a share for the Cookie Jar treasury. Off until they tick it. */
   const [roundUp, setRoundUp] = useState(false);
@@ -195,12 +195,12 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
   // choice rather than an accident. A read that fails says nothing either way and is dropped.
   const hasRef = Boolean(request?.ref);
   useEffect(() => {
-    setJarPayments(null);
+    setJarHistory(null);
     if (!hasRef || !resolved) return;
     let live = true;
     fetchJarHistory(connection, resolved.address, 50)
       .then((history) => {
-        if (live) setJarPayments(history.payments);
+        if (live) setJarHistory(history);
       })
       .catch(() => undefined);
     return () => {
@@ -210,9 +210,13 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
 
   /** What the jar already holds under this link's reference, against what the link asks for. */
   const settlement = useMemo((): Settlement | null => {
-    if (!jarPayments || !request?.ref) return null;
-    return settlementOf(jarPayments, request.ref, mint, rawAmount ?? 0n);
-  }, [jarPayments, request, mint, rawAmount]);
+    if (!jarHistory || !request?.ref) return null;
+    return settlementOf(jarHistory.payments, request.ref, mint, rawAmount ?? 0n, {
+      scanned: jarHistory.scanned,
+      hitCap: jarHistory.hitCap,
+      stoppedAtLimit: jarHistory.stoppedAtLimit,
+    });
+  }, [jarHistory, request, mint, rawAmount]);
 
   /**
    * Why this payment cannot go, in the words the button wears. A recipient that failed to resolve
@@ -611,7 +615,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
 
       {error && <p className="alarm">{error}</p>}
 
-      {settlement && settlement.state !== "unpaid" && request.ref && (
+      {settlement && settlement.state !== "unpaid" && settlement.state !== "unknown" && request.ref && (
         <p className="alarm">
           {settlement.state === "paid"
             ? `Reference ${request.ref} has already been paid to this jar`
@@ -629,6 +633,16 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
             "."
           )}{" "}
           <a href={receiptUrl(request.to, request.ref, origin)}>See the receipt</a>
+        </p>
+      )}
+
+      {settlement?.state === "unknown" && request.ref && (
+        <p className="small">
+          This jar's history could not be read far enough back to say whether reference{" "}
+          <span className="mono">{request.ref}</span> has already been paid. A public Cookie Chain
+          node keeps roughly the last ten days, so an older payment is settled on chain and simply
+          not visible from here. Check{" "}
+          <a href={receiptUrl(request.to, request.ref, origin)}>the receipt</a> before paying again.
         </p>
       )}
 

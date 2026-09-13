@@ -190,6 +190,26 @@ describe("a link that carries a reference", () => {
     expect(stubs.fetchJarHistory).toHaveBeenCalledTimes(1);
   });
 
+  it("says the jar could not be read far enough back, rather than staying silent", async () => {
+    // The RPC holds roughly ten days. An older payment is settled and invisible, which must not
+    // read the same as never paid: the payer is told to check the receipt before paying again.
+    stubs.fetchJarHistory.mockResolvedValue({
+      payments: [],
+      scanned: 1000,
+      hitCap: true,
+      stoppedAtLimit: false,
+    });
+    const payload = encodeRequest({ to: RECIPIENT, label: "Invoice", amount: "25000", ref: "INV-7" });
+    render(<Pay payload={payload} />);
+
+    const notice = await screen.findByText(/could not be read far enough back/);
+    expect(notice.textContent).toContain("INV-7");
+    // Not an accusation either way: the button stays the plain one, with no "again", and the
+    // settled warning (which is the alarm, not this note) does not appear.
+    expect(document.querySelector("button.primary")?.textContent).toBe("Pay 25,000 COOK");
+    expect(document.querySelector("p.alarm")).toBeNull();
+  });
+
   it("reports a part payment against the amount the link asks for", async () => {
     stubs.fetchJarHistory.mockResolvedValue({
       payments: [{ ...paid, rawAmount: 10_000n * 10n ** 9n }],

@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { COOK_MINT } from "./config";
 import type { JarPayment } from "./history";
-import { normalizeRef, paymentsForRef, settlementOf } from "./reconcile";
+import { coversAbsence, normalizeRef, paymentsForRef, settlementOf } from "./reconcile";
+
+/** A read that reached the end of the jar's history, so an absence means something. */
+const FULL = { scanned: 120, hitCap: false, stoppedAtLimit: false };
 
 const TOKEN = "GNFqCqaU9R2jas4iaKEFZM5hiX5AHxBL7rPHTCpX5T6z";
 
@@ -46,7 +49,7 @@ describe("paymentsForRef", () => {
 
 describe("settlementOf", () => {
   it("is unpaid with no matching payment", () => {
-    const s = settlementOf([payment({ ref: "OTHER", rawAmount: 5n })], "INV-1", COOK_MINT, 5n);
+    const s = settlementOf([payment({ ref: "OTHER", rawAmount: 5n })], "INV-1", COOK_MINT, 5n, FULL);
     expect(s.state).toBe("unpaid");
     expect(s.paidRaw).toBe(0n);
     expect(s.payments).toEqual([]);
@@ -57,14 +60,14 @@ describe("settlementOf", () => {
       payment({ signature: "a", ref: "INV-1", rawAmount: 3n }),
       payment({ signature: "b", ref: "INV-1", rawAmount: 2n }),
     ];
-    const s = settlementOf(rows, "INV-1", COOK_MINT, 5n);
+    const s = settlementOf(rows, "INV-1", COOK_MINT, 5n, FULL);
     expect(s.state).toBe("paid");
     expect(s.paidRaw).toBe(5n);
     expect(s.payments).toHaveLength(2);
   });
 
   it("is partial when the matching payments fall short", () => {
-    const s = settlementOf([payment({ ref: "INV-1", rawAmount: 2n })], "INV-1", COOK_MINT, 5n);
+    const s = settlementOf([payment({ ref: "INV-1", rawAmount: 2n })], "INV-1", COOK_MINT, 5n, FULL);
     expect(s.state).toBe("partial");
     expect(s.paidRaw).toBe(2n);
     expect(s.requestedRaw).toBe(5n);
@@ -72,16 +75,50 @@ describe("settlementOf", () => {
 
   it("lists a payment in another token but does not count it toward the amount", () => {
     const rows = [payment({ ref: "INV-1", rawAmount: 100n, mint: TOKEN, decimals: 6, symbol: "" })];
-    const s = settlementOf(rows, "INV-1", COOK_MINT, 5n);
+    const s = settlementOf(rows, "INV-1", COOK_MINT, 5n, FULL);
     expect(s.state).toBe("unpaid");
     expect(s.payments).toHaveLength(1);
     expect(s.totals.map((t) => t.mint)).toEqual([TOKEN]);
   });
 
   it("treats an open request (no amount) as unpaid until something arrives, then paid", () => {
-    expect(settlementOf([], "TIP", COOK_MINT, 0n).state).toBe("unpaid");
-    expect(settlementOf([payment({ ref: "TIP", rawAmount: 1n })], "TIP", COOK_MINT, 0n).state).toBe(
+    expect(settlementOf([], "TIP", COOK_MINT, 0n, FULL).state).toBe("unpaid");
+    expect(settlementOf([payment({ ref: "TIP", rawAmount: 1n })], "TIP", COOK_MINT, 0n, FULL).state).toBe(
       "paid",
     );
+  });
+});
+
+describe("an absence only means unpaid when the jar was read to its end", () => {
+  const gone = { scanned: 0, hitCap: false, stoppedAtLimit: false };
+  const capped = { scanned: 1000, hitCap: true, stoppedAtLimit: false };
+  const truncated = { scanned: 300, hitCap: false, stoppedAtLimit: true };
+
+  it("is unknown when the RPC held no history at all", () => {
+    // The payment may be years old or may never have happened; this read cannot tell them apart.
+    expect(settlementOf([], "INV-1", COOK_MINT, 5n, gone).state).toBe("unknown");
+  });
+
+  it("is unknown when the scan stopped at its cap or at the payment limit", () => {
+    expect(settlementOf([], "INV-1", COOK_MINT, 5n, capped).state).toBe("unknown");
+    expect(settlementOf([], "INV-1", COOK_MINT, 5n, truncated).state).toBe("unknown");
+  });
+
+  it("is unknown when no coverage was supplied, rather than assuming the best", () => {
+    expect(settlementOf([], "INV-1", COOK_MINT, 5n).state).toBe("unknown");
+    expect(settlementOf([], "INV-1", COOK_MINT, 5n, null).state).toBe("unknown");
+  });
+
+  it("still reports paid on a truncated read, because a match is evidence either way", () => {
+    const rows = [payment({ ref: "INV-1", rawAmount: 5n })];
+    expect(settlementOf(rows, "INV-1", COOK_MINT, 5n, capped).state).toBe("paid");
+  });
+
+  it("coversAbsence answers the same question on its own", () => {
+    expect(coversAbsence(FULL)).toBe(true);
+    expect(coversAbsence(gone)).toBe(false);
+    expect(coversAbsence(capped)).toBe(false);
+    expect(coversAbsence(truncated)).toBe(false);
+    expect(coversAbsence(null)).toBe(false);
   });
 });
