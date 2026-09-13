@@ -79,6 +79,9 @@ const TRASHCOIN_MINT = "GNFqCqaU9R2jas4iaKEFZM5hiX5AHxBL7rPHTCpX5T6z";
 /** The jar the README points at. What it holds depends on who has paid it and how long ago. */
 const DEMO_JAR = "5ZJsQcVGMqBbuiSQjRT1dBntDp3x8YbfWf359mPdEGwA";
 
+/** The CookOven name the demo jar owns, so every published link can name it instead of its key. */
+const DEMO_NAME = "cookietab.cook";
+
 /** A payment into that jar, read off the chain. It leaves the node when the window rolls past it. */
 const DEMO_PAYMENT = {
   signature:
@@ -184,6 +187,18 @@ async function main(): Promise<void> {
     );
     assert(resolved.name === KNOWN_NAME, "the resolved name was not carried through");
     return `${KNOWN_NAME} → ${resolved.address.toBase58()} (registry account ${domain?.name}, legacy=${domain?.legacy})`;
+  });
+
+  await check("the demo jar's own .cook name resolves to it", async () => {
+    // Every link published for this entry names the jar rather than its base58 key, so the name has
+    // to keep resolving to the same account the jar pages read.
+    const resolved = await resolveRecipient(connection, DEMO_NAME);
+    assert(
+      resolved.address.toBase58() === DEMO_JAR,
+      `${DEMO_NAME} resolves to ${resolved.address.toBase58()}, not the demo jar`,
+    );
+    assert(resolved.name === DEMO_NAME, `the name came back as ${resolved.name}`);
+    return `${DEMO_NAME} → ${DEMO_JAR}`;
   });
 
   await check(".cook name that is not registered is refused", async () => {
