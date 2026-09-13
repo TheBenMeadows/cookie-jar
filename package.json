@@ -14,6 +14,10 @@
     "test": "vitest run",
     "live": "tsx scripts/live-check.ts"
   },
+  "overrides": {
+    "stream-json": "^3.5.0",
+    "uuid": "^11.1.1"
+  },
   "dependencies": {
     "@solana/spl-token": "^0.4.9",
     "@solana/wallet-adapter-base": "^0.9.27",
