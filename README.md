@@ -6,6 +6,10 @@ Fill in a form and you get a short link and a QR code, priced in a token or in d
 
 Cookie Tab has no backend, holds no keys and takes no fee. The payment request travels inside the link, and the history is read back out of the chain.
 
+![Making a link, opening it as the payer, and reading the jar back](docs/demo.gif)
+
+Every screen above is the live site at https://cookie-tab.pages.dev reading Cookie Chain, including the notice that the invoice reference has already been settled.
+
 ## Making a request and getting paid
 
 Create a request. Pick a recipient (a Cookie Chain address or a CookOven `.cook` name), a token, and an amount. The amount can be fixed in the token, fixed in US dollars, or left open for a tip jar. Add a label, a note and an invoice reference if you want them.
