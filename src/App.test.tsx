@@ -35,9 +35,11 @@ describe("the app renders", () => {
     // The form keeps its heading, one level down: the page's own heading is the invoice.
     expect(screen.getByRole("heading", { level: 2, name: "Make a payment link" })).toBeDefined();
     expect(screen.getByPlaceholderText("baker.cook or a Cookie Chain address")).toBeDefined();
-    // The stubbed RPC never answers usefully; the proof line under the button waits on it rather
-    // than throwing, which is the behaviour a slow node gets too.
-    expect(screen.getByText(/Reading the last payment/)).toBeDefined();
+    // The stubbed RPC never answers usefully. The proof line under the button either waits on it or
+    // says the chain could not be read; it never throws and never claims a payment.
+    expect(
+      await screen.findByText(/Reading the last payment|could not be read just now/),
+    ).toBeDefined();
   });
 
   it("pressing Pay opens a payment link for the showcase invoice with a fresh reference", async () => {
@@ -47,7 +49,7 @@ describe("the app renders", () => {
     const request = decodeRequest(window.location.hash.slice("#/pay/".length));
     expect(request.to).toBe("cookietab.cook");
     expect(request.amount).toBe("700");
-    expect(request.ref).toMatch(/^TAB-[0-9A-HJKMNP-TV-Z]{6}$/);
+    expect(request.ref).toMatch(/^TAB-[0-9A-HJKMNP-TV-Z]{7}$/);
   });
 
   it("shows the reference page", async () => {

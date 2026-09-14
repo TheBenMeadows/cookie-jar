@@ -4,15 +4,16 @@ import { buildMemo, decodeRequest, encodeRequest, MAX_REF_LENGTH } from "./reque
 import {
   freshRef,
   REF_ALPHABET,
+  REF_LENGTH,
   SHOWCASE_REF_PREFIX,
   showcaseRequest,
 } from "./showcase";
 
 describe("freshRef", () => {
-  it("returns TAB- followed by six characters from the reference alphabet", () => {
+  it("returns TAB- followed by REF_LENGTH characters from the reference alphabet", () => {
     const ref = freshRef();
     expect(ref.startsWith(SHOWCASE_REF_PREFIX)).toBe(true);
-    expect(ref.length).toBe(SHOWCASE_REF_PREFIX.length + 6);
+    expect(ref.length).toBe(SHOWCASE_REF_PREFIX.length + REF_LENGTH);
     const suffix = ref.slice(SHOWCASE_REF_PREFIX.length);
     for (const char of suffix) {
       expect(REF_ALPHABET.includes(char)).toBe(true);
@@ -20,7 +21,7 @@ describe("freshRef", () => {
   });
 
   it("returns a deterministic string when supplied with an injected random function", () => {
-    const testBytes = [0, 1, 31, 32, 255, 100];
+    const testBytes = [0, 1, 31, 32, 255, 100, 7];
     const mockRandom = (bytes: Uint8Array): Uint8Array => {
       bytes.set(testBytes);
       return bytes;

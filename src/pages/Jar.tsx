@@ -145,6 +145,7 @@ export function Jar({
   // a composed checkout shows as many instructions behind one signature, which the amount row alone
   // cannot say. Signatures are deduplicated because a payment in two assets lists twice.
   useEffect(() => {
+    setDetails({});
     if (!payments || !refFilter) return;
     const signatures = [...new Set(paymentsForRef(payments, refFilter).map((p) => p.signature))].slice(
       0,
@@ -264,7 +265,7 @@ export function Jar({
                 A reference is text anyone can put in a memo; the transaction link is the evidence.
               </p>
               <div className="rows stacked">
-                {matching.map((p) => (
+                {matching.map((p, i) => (
                   <div className="row" key={`ref:${p.signature}:${p.mint}`}>
                     <div className="k">
                       <div>{formatTimestamp(p.blockTime)}</div>
@@ -275,11 +276,17 @@ export function Jar({
                         {groupDigits(rawToUi(p.rawAmount, p.decimals))} {getSymbol(p.mint, p.symbol)}
                       </div>
                       {p.from && <div>From: {shortAddress(p.from)}</div>}
-                      {details[p.signature] && (
-                        <div>
-                          <TxShape detail={details[p.signature] as TxDetail} />
-                        </div>
-                      )}
+                      {/* One transaction can credit two assets; its shape is written once, on its first row. */}
+                      {matching.findIndex((q) => q.signature === p.signature) === i &&
+                        p.signature in details && (
+                          <div>
+                            {details[p.signature] ? (
+                              <TxShape detail={details[p.signature] as TxDetail} />
+                            ) : (
+                              "The transaction itself could not be read back from this RPC just now."
+                            )}
+                          </div>
+                        )}
                       <div>
                         <a href={explorerTxUrl(p.signature)} className="mono">
                           {shortAddress(p.signature, 8, 6)}

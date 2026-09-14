@@ -624,9 +624,9 @@ async function main(): Promise<void> {
     const detail = await fetchTxDetail(connection, latest.signature);
     assert(detail !== null, `the node lists ${latest.signature} but will not return it`);
     assert(detail?.signatures === 1, `the landed checkout carried ${detail?.signatures} signatures`);
-    assert(detail?.hasMemo === true, "the landed checkout carries no memo at the top level");
+    assert(detail?.hasMemo === true, "the landed checkout carries no memo");
     assert((detail?.instructions ?? 0) >= 3, `the landed checkout has only ${detail?.instructions} instructions`);
-    return `${SHOWCASE_NAME}: ${request.amount} ${request.symbol} invoice encodes under ${request.ref}; ${SHOWCASE_LANDED_REF} last landed ${latest.signature.slice(0, 10)}… as ${detail?.instructions} instructions, ${detail?.signatures} signature, ${detail?.venues.length} venue(s) ${detail?.venues.map((v) => v.slice(0, 6)).join(", ")}`;
+    return `${SHOWCASE_NAME}: ${request.amount} ${request.symbol} invoice encodes under ${request.ref}; ${SHOWCASE_LANDED_REF} last landed ${latest.signature.slice(0, 10)}… as ${detail?.instructions} instructions, ${detail?.signatures} signature, through ${detail?.programs.map((p) => p.slice(0, 6)).join(", ")}`;
   });
 
   await check("how far back a jar can see on this RPC", async () => {

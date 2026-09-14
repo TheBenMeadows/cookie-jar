@@ -227,9 +227,12 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
     if (!resolved) return "This link's recipient does not resolve";
     if (stage === "sending") return "Waiting for your wallet…";
     if (rawAmount === null) return "Enter an amount";
-    if (connected && shortfall !== null) return `You need more ${symbol} than this wallet holds`;
+    if (connected && holding === null) return "Reading this wallet's balance…";
+    // The swap panel under the button is the path for a wallet short of the token, and the button
+    // says so rather than reading as a refusal.
+    if (connected && shortfall !== null) return `Short of ${symbol}: swap and pay below, in one transaction`;
     return null;
-  }, [resolved, connected, stage, rawAmount, shortfall, symbol]);
+  }, [resolved, connected, stage, rawAmount, holding, shortfall, symbol]);
 
   const pay = useCallback(async () => {
     if (!request || !resolved || !publicKey || rawAmount === null) return;
@@ -466,6 +469,11 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
             <h2>Receipt</h2>
             <p className="small">
               A page anyone can open to see this reference paid, rebuilt from the chain each time.
+            </p>
+            <p className="buttons">
+              <a className="primary" href={receiptUrl(request.to, request.ref, origin)}>
+                Open the receipt
+              </a>
             </p>
             <div className="linkbox">
               <input type="text" readOnly value={receiptUrl(request.to, request.ref, origin)} />
