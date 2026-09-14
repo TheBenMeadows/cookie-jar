@@ -139,6 +139,14 @@ The checks above never move money. To confirm a real payment, one funded wallet 
 
 Step 5 is the one that matters. It proves the history is rebuilt from chain data with nothing stored anywhere.
 
+## Paying from an agent, end to end
+
+The same invoice can be settled by an agent instead of a browser, which puts the wire format inside software this repository does not control. The agent needs a wallet of its own and the cookie-mcp build that carries the memo parameter.
+
+`scripts/fund-agent-wallet.ts` prepares that wallet. It buys TRASHCOIN with the bounty payer's COOK if the payer does not already hold enough, then sends the agent a little over one invoice plus the COOK for fees and its token account. `--dry-run` quotes the swap and simulates the transfer without sending either. A wallet holding one invoice cannot pay two, so the balance bounds what a misfired tool call can spend.
+
+Point an MCP client at a cookie-mcp whose `transfer` takes `memo`, give it the pay link, and ask it to pay. The agent decodes the request, pays the amount in the token the request names, and writes `cookiejar:1|<ref>|<note>` into the memo. That reference then answers on the receipt page like any other payment, with the agent's own address in the From column. An agent running the published 0.4.0 moves the money without writing a memo, so its payment does not appear in a jar.
+
 ## Known limits
 
 What the swap check does and does not establish. Before a router's transaction reaches a wallet, Cookie Tab requires that the payer is the fee payer and the only signature it needs, that it simulates without error, and that in simulation the payer's own balances move the way the quote said: at least the minimum out arrives, no more of the sold token leaves than was quoted, and nothing else the wallet holds goes down. That is a check against this quote, not a security review of the router. It does not enumerate the instructions or hold them to an allowlist, so a route that satisfies every one of those conditions is accepted whatever programs it calls. The composed form adds one more requirement: in simulation the recipient's balance moves by exactly the invoice. A quote can still move between simulation and the transaction taking effect. The router's own minimum-out is what bounds that, not this app.
