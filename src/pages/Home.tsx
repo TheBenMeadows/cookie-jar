@@ -1,16 +1,15 @@
-import { PublicKey } from "@solana/web3.js";
 import { useEffect, useMemo, useState } from "react";
 
 import { TxShape } from "../components/TxShape";
 import { getConnection } from "../lib/chain";
 import { explorerTxUrl } from "../lib/config";
+import { resolveRecipient } from "../lib/domains";
 import { formatTimestamp, groupDigits, shortAddress } from "../lib/format";
 import { fetchJarHistory, type JarPayment } from "../lib/history";
-import { paymentsForRef } from "../lib/reconcile";
+import { coversAbsence, paymentsForRef } from "../lib/reconcile";
 import { encodeRequest, jarUrl, receiptUrl } from "../lib/request";
 import {
   SHOWCASE_AMOUNT,
-  SHOWCASE_JAR,
   SHOWCASE_LANDED_REF,
   SHOWCASE_NAME,
   SHOWCASE_SYMBOL,
@@ -42,7 +41,20 @@ interface Landed {
   detail: TxDetail | null;
 }
 
-type Proof = { kind: "reading" } | { kind: "landed"; landed: Landed } | { kind: "none" } | { kind: "unreadable" };
+/**
+ * What the read under the button found. `absent` and `unread` are the two honest empties: the first
+ * when the jar's history was read to its end and held no such payment, the second when the read
+ * stopped early, at its payment limit or its scan cap, and an absence means nothing.
+ */
+type Proof =
+  | { kind: "reading" }
+  | { kind: "landed"; landed: Landed }
+  | { kind: "absent" }
+  | { kind: "unread" }
+  | { kind: "unreadable" };
+
+/** As many payments as the receipt page reads, so the two never disagree about what is there. */
+const PROOF_LIMIT = 50;
 
 function Showcase(): JSX.Element {
   const connection = useMemo(() => getConnection(), []);
@@ -54,16 +66,19 @@ function Showcase(): JSX.Element {
   );
 
   // The proof under the button is the last payment that landed under the showcase reference, read
-  // the same way the receipt page reads it. The key is used directly rather than the name: the name
-  // is for links people follow, and a resolution here would be one more round trip before paint.
+  // the same way and to the same depth as the receipt page it links to. The name is resolved first,
+  // as the invoice and the receipt resolve it: a name can be transferred, and a proof read off the
+  // old key would go on describing a jar the invoice no longer pays.
   useEffect(() => {
     let live = true;
     (async () => {
-      const history = await fetchJarHistory(connection, new PublicKey(SHOWCASE_JAR), 10);
+      const resolved = await resolveRecipient(connection, SHOWCASE_NAME);
+      if (!live) return;
+      const history = await fetchJarHistory(connection, resolved.address, PROOF_LIMIT);
       if (!live) return;
       const [latest] = paymentsForRef(history.payments, SHOWCASE_LANDED_REF);
       if (!latest) {
-        setProof({ kind: "none" });
+        setProof({ kind: coversAbsence(history) ? "absent" : "unread" });
         return;
       }
       const detail = await fetchTxDetail(connection, latest.signature).catch(() => null);
@@ -89,16 +104,18 @@ function Showcase(): JSX.Element {
       <p className="lede">
         A live request for {groupDigits(SHOWCASE_AMOUNT)} {SHOWCASE_SYMBOL} on the demo jar. Hold
         only COOK? The page quotes both Cookie Chain routers, checks the winning route against your
-        balance, and puts the swap, the transfer and the memo behind one signature. The receipt is
-        then read back from the chain, not from a database.
+        balance, and, when the route fits one transaction, puts the swap, the transfer and the memo
+        behind one signature; when it does not, the page swaps first, then pays, and says so. Hold{" "}
+        {SHOWCASE_SYMBOL} already? Then it is a plain transfer. Either way the receipt is read back
+        from the chain, not from a database.
       </p>
       <div className="amount">
         <span>{groupDigits(SHOWCASE_AMOUNT)}</span>
         <span className="unit">{SHOWCASE_SYMBOL}</span>
       </div>
       <p className="small">
-        to <a href={jarUrl(SHOWCASE_NAME, origin)}>{SHOWCASE_NAME}</a>, about half a dollar. Each
-        press gets its own reference, so your receipt is yours.
+        to <a href={jarUrl(SHOWCASE_NAME, origin)}>{SHOWCASE_NAME}</a>. Each press gets its own
+        reference, so your payment lands on its own receipt.
       </p>
       <div className="buttons">
         <button type="button" className="primary" onClick={pay}>
@@ -115,11 +132,20 @@ function ProofLine({ proof, origin }: { proof: Proof; origin: string }): JSX.Ele
   switch (proof.kind) {
     case "reading":
       return <p className="small">Reading the last payment that landed here from the chain…</p>;
-    case "none":
+    case "absent":
       return (
         <p className="small">
-          The last payment that landed here is older than what the public RPC still holds, about ten
-          days, so <a href={receipt}>its receipt</a> reads "no record" rather than guessing.
+          No payment under {SHOWCASE_LANDED_REF} is in everything this RPC holds for the jar. A
+          public Cookie Chain node keeps roughly ten days, so the last one has aged out of it;{" "}
+          <a href={receipt}>its receipt</a> reads the same.
+        </p>
+      );
+    case "unread":
+      return (
+        <p className="small">
+          The last payment under {SHOWCASE_LANDED_REF} is not among the {PROOF_LIMIT} most recent
+          payments this page read, so nothing can be said about it from here.{" "}
+          <a href={receipt}>Its receipt</a> reads the same jar the same way.
         </p>
       );
     case "unreadable":
@@ -137,7 +163,9 @@ function ProofLine({ proof, origin }: { proof: Proof; origin: string }): JSX.Ele
             <>
               : <TxShape detail={detail} />
             </>
-          ) : null}
+          ) : (
+            "; the transaction itself could not be read back from this RPC just now"
+          )}
           . <a href={receipt}>See that receipt</a> or{" "}
           <a href={explorerTxUrl(payment.signature)} className="mono">
             {shortAddress(payment.signature, 8, 6)}

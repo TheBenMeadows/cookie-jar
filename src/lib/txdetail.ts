@@ -1,23 +1,32 @@
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { ComputeBudgetProgram, type Connection, type ParsedTransactionWithMeta, SystemProgram } from "@solana/web3.js";
+import {
+  ComputeBudgetProgram,
+  type Connection,
+  type ParsedInstruction,
+  type ParsedTransactionWithMeta,
+  type PartiallyDecodedInstruction,
+  SystemProgram,
+} from "@solana/web3.js";
 
 import { MEMO_PROGRAM_ID } from "./config";
 
-/** Details extracted from a landed transaction to display on a receipt. */
+/** The shape of a landed transaction, for a receipt that says more than "paid". */
 export interface TxDetail {
   /** Signatures on the transaction. One means the payer signed once for everything in it. */
   signatures: number;
-  /** Top-level instructions in the message. */
+  /** Top-level instructions in the message, housekeeping included. */
   instructions: number;
   /** Instructions the programs above issued in turn, across every inner group. */
   innerInstructions: number;
   /**
-   * Program ids invoked at the top level that are not housekeeping (system, compute budget, the two
-   * token programs, the associated-token program, the memo program), in order of first appearance.
-   * For a composed checkout these are the swap venues.
+   * Program ids invoked anywhere in the transaction, top level or inner, that are not housekeeping
+   * (system, compute budget, the two token programs, the associated-token program, the memo
+   * program), in order of first appearance. On a composed checkout these are the programs the swap
+   * went through; a router that calls venues through CPI lists both itself and the venues. Nothing
+   * here says which of them is a venue, so a receipt names them as programs and links each one.
    */
-  venues: string[];
-  /** True when a memo-program instruction is present at the top level. */
+  programs: string[];
+  /** True when a memo-program instruction is present anywhere, which is how the jar reads memos too. */
   hasMemo: boolean;
 }
 
@@ -33,38 +42,27 @@ export const HOUSEKEEPING_PROGRAMS: ReadonlySet<string> = new Set([
 
 /** Pure summary of a parsed transaction, so it can be tested without a connection. */
 export function summarizeTransaction(tx: ParsedTransactionWithMeta): TxDetail {
-  const signatures = tx.transaction.signatures.length;
-  const topInstructions = tx.transaction.message.instructions;
-  const instructions = topInstructions.length;
-
-  let innerInstructions = 0;
-  if (tx.meta?.innerInstructions) {
-    for (const group of tx.meta.innerInstructions) {
-      innerInstructions += group.instructions.length;
-    }
-  }
+  const top = tx.transaction.message.instructions;
+  const inner: (ParsedInstruction | PartiallyDecodedInstruction)[] = (
+    tx.meta?.innerInstructions ?? []
+  ).flatMap((group) => group.instructions);
 
   const memoProgramId = MEMO_PROGRAM_ID.toBase58();
   let hasMemo = false;
-  const venues: string[] = [];
-
-  for (const ix of topInstructions) {
-    const programIdStr = ix.programId.toBase58();
-    if (programIdStr === memoProgramId) {
-      hasMemo = true;
-    }
-    if (!HOUSEKEEPING_PROGRAMS.has(programIdStr)) {
-      if (!venues.includes(programIdStr)) {
-        venues.push(programIdStr);
-      }
+  const programs: string[] = [];
+  for (const ix of [...top, ...inner]) {
+    const programId = ix.programId.toBase58();
+    if (programId === memoProgramId) hasMemo = true;
+    if (!HOUSEKEEPING_PROGRAMS.has(programId) && !programs.includes(programId)) {
+      programs.push(programId);
     }
   }
 
   return {
-    signatures,
-    instructions,
-    innerInstructions,
-    venues,
+    signatures: tx.transaction.signatures.length,
+    instructions: top.length,
+    innerInstructions: inner.length,
+    programs,
     hasMemo,
   };
 }

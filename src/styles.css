@@ -435,6 +435,13 @@ button:disabled {
   font-weight: 700;
 }
 
+/* The same control as a link, for the one action that is a navigation: opening a receipt. */
+a.primary {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+}
+
 .primary {
   width: 100%;
   background: var(--ink);
