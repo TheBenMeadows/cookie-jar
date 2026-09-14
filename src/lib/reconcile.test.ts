@@ -5,7 +5,7 @@ import type { JarPayment } from "./history";
 import { coversAbsence, normalizeRef, paymentsForRef, settlementOf } from "./reconcile";
 
 /** A read that reached the end of the jar's history, so an absence means something. */
-const FULL = { scanned: 120, hitCap: false, stoppedAtLimit: false };
+const FULL = { scanned: 120, hitCap: false, stoppedAtLimit: false, reachedRetentionFloor: false };
 
 const TOKEN = "GNFqCqaU9R2jas4iaKEFZM5hiX5AHxBL7rPHTCpX5T6z";
 
@@ -90,9 +90,11 @@ describe("settlementOf", () => {
 });
 
 describe("an absence only means unpaid when the jar was read to its end", () => {
-  const gone = { scanned: 0, hitCap: false, stoppedAtLimit: false };
-  const capped = { scanned: 1000, hitCap: true, stoppedAtLimit: false };
-  const truncated = { scanned: 300, hitCap: false, stoppedAtLimit: true };
+  const gone = { scanned: 0, hitCap: false, stoppedAtLimit: false, reachedRetentionFloor: true };
+  const capped = { scanned: 1000, hitCap: true, stoppedAtLimit: false, reachedRetentionFloor: false };
+  const truncated = { scanned: 300, hitCap: false, stoppedAtLimit: true, reachedRetentionFloor: false };
+  /** Every signature the node would return, ending at the oldest block it still holds. */
+  const atFloor = { scanned: 40, hitCap: false, stoppedAtLimit: false, reachedRetentionFloor: true };
 
   it("is unknown when the RPC held no history at all", () => {
     // The payment may be years old or may never have happened; this read cannot tell them apart.
@@ -102,6 +104,13 @@ describe("an absence only means unpaid when the jar was read to its end", () => 
   it("is unknown when the scan stopped at its cap or at the payment limit", () => {
     expect(settlementOf([], "INV-1", COOK_MINT, 5n, capped).state).toBe("unknown");
     expect(settlementOf([], "INV-1", COOK_MINT, 5n, truncated).state).toBe("unknown");
+  });
+
+  it("is unknown when the read consumed the whole jar but ended at the retention floor", () => {
+    // Nothing stopped this read except the node running out of blocks. A jar older than the window
+    // ends its history there rather than at its own first payment, so an invoice settled before it
+    // reads exactly like one never paid, and calling that unpaid invites a second payment.
+    expect(settlementOf([], "INV-1", COOK_MINT, 5n, atFloor).state).toBe("unknown");
   });
 
   it("is unknown when no coverage was supplied, rather than assuming the best", () => {
@@ -119,6 +128,7 @@ describe("an absence only means unpaid when the jar was read to its end", () => 
     expect(coversAbsence(gone)).toBe(false);
     expect(coversAbsence(capped)).toBe(false);
     expect(coversAbsence(truncated)).toBe(false);
+    expect(coversAbsence(atFloor)).toBe(false);
     expect(coversAbsence(null)).toBe(false);
   });
 });

@@ -215,6 +215,7 @@ export function Pay({ payload }: { payload: string }): JSX.Element {
       scanned: jarHistory.scanned,
       hitCap: jarHistory.hitCap,
       stoppedAtLimit: jarHistory.stoppedAtLimit,
+      reachedRetentionFloor: jarHistory.reachedRetentionFloor,
     });
   }, [jarHistory, request, mint, rawAmount]);
 

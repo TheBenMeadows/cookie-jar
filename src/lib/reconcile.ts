@@ -38,12 +38,28 @@ export interface HistoryCoverage {
   hitCap: boolean;
   /** True when the scan stopped at the payment limit with candidates left unfetched. */
   stoppedAtLimit: boolean;
+  /** True when the oldest signature read lies at the edge of what the node retains. */
+  reachedRetentionFloor: boolean;
 }
 
-/** True when an absence of matching payments is evidence, rather than the edge of what was read. */
+/**
+ * True when an absence of matching payments is evidence, rather than the edge of what was read.
+ *
+ * Three ways a read can fall short and one of them is not about this app at all. The scan can stop
+ * at its cap or at its payment limit, which the jar controls. It can also consume every signature
+ * the node will return and still have seen only the last ten days, because that is all a public
+ * Cookie Chain node keeps: a jar older than the window ends its history at the node's earliest
+ * block, not at its own first payment, and an invoice settled before that reads exactly like one
+ * never paid.
+ */
 export function coversAbsence(coverage: HistoryCoverage | null): boolean {
   if (!coverage) return false;
-  return coverage.scanned > 0 && !coverage.hitCap && !coverage.stoppedAtLimit;
+  return (
+    coverage.scanned > 0 &&
+    !coverage.hitCap &&
+    !coverage.stoppedAtLimit &&
+    !coverage.reachedRetentionFloor
+  );
 }
 
 export interface Settlement {

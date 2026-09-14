@@ -13,7 +13,7 @@ import {
 import { fetchToken } from "../lib/tokens";
 import { explorerAddressUrl, explorerTxUrl, COOK_MINT, COOK_SYMBOL } from "../lib/config";
 import { formatTimestamp, groupDigits, rawToUi, shortAddress } from "../lib/format";
-import { coversAbsence, paymentsForRef } from "../lib/reconcile";
+import { coversAbsence, paymentsForRef, type HistoryCoverage } from "../lib/reconcile";
 import { jarUrl, receiptUrl } from "../lib/request";
 import { fetchTxDetail, type TxDetail } from "../lib/txdetail";
 import { Qr } from "../components/Qr";
@@ -43,9 +43,8 @@ export function Jar({
   const connection = useMemo(() => getConnection(), []);
   const [resolved, setResolved] = useState<ResolvedRecipient | null>(null);
   const [payments, setPayments] = useState<JarPayment[] | null>(null);
-  const [hitCap, setHitCap] = useState(false);
-  const [scanned, setScanned] = useState(0);
-  const [stoppedAtLimit, setStoppedAtLimit] = useState(false);
+  /** How much of the jar the read saw, kept whole so every part of it travels together. */
+  const [coverage, setCoverage] = useState<HistoryCoverage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadCount, setReloadCount] = useState(0);
@@ -76,9 +75,7 @@ export function Jar({
       const history = await fetchJarHistory(connection, res.address, 50);
       if (!live) return;
       setPayments(history.payments);
-      setScanned(history.scanned);
-      setHitCap(history.hitCap);
-      setStoppedAtLimit(history.stoppedAtLimit);
+      setCoverage(history);
       setLoading(false);
     })().catch((e: unknown) => {
       if (live) {
@@ -227,7 +224,7 @@ export function Jar({
   const totalTokensCount = totals.length;
   const matching = refFilter ? paymentsForRef(payments, refFilter) : [];
   /** Whether an absence of matching payments is evidence, or just the edge of what was read. */
-  const readToTheEnd = coversAbsence({ scanned, hitCap, stoppedAtLimit });
+  const readToTheEnd = coversAbsence(coverage);
   const matchingTotals = refFilter ? totalsByToken(matching) : [];
 
   return (
@@ -333,11 +330,14 @@ export function Jar({
           <p className="small">
             {totalPaymentsCount} {totalPaymentsCount === 1 ? "payment" : "payments"} across{" "}
             {totalTokensCount} {totalTokensCount === 1 ? "token" : "tokens"}.
-            {stoppedAtLimit
+            {coverage?.stoppedAtLimit
               ? ` Showing the latest ${totalPaymentsCount}; older transactions on this jar were not read.`
               : ""}
-            {hitCap
+            {coverage?.hitCap
               ? ` Only the most recent ${SCAN_CAP} transactions on this jar's addresses were read, so older payments are not listed.`
+              : ""}
+            {coverage?.reachedRetentionFloor
+              ? " This jar's history runs back to the oldest block this RPC still holds, roughly ten days, so anything older is on chain but cannot be listed from here."
               : ""}
           </p>
 

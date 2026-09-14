@@ -134,7 +134,23 @@ export interface JarHistory {
   hitCap: boolean;
   /** True when the scan stopped at `limit` payments with candidates left unfetched. */
   stoppedAtLimit: boolean;
+  /**
+   * True when the oldest signature read sits close enough to the node's earliest retained block
+   * that the jar's history runs to the edge of what this RPC keeps. Reading every signature the
+   * node returns is not the same as reading the jar's whole life, and on a jar older than the
+   * retention window the two look identical from here.
+   */
+  reachedRetentionFloor: boolean;
 }
+
+/**
+ * How near the node's first available block an oldest signature has to be before the read counts
+ * as having run into the retention floor. One day of slots at Cookie Chain's rate, which absorbs
+ * the floor advancing between the two calls and during a slow read. The error it admits is calling
+ * a fully-read jar uncertain, which costs a "no record" where "not paid" was available; the error
+ * it prevents is calling a settled invoice unpaid.
+ */
+export const RETENTION_FLOOR_MARGIN_SLOTS = 216_000;
 
 /** A signature worth fetching, and what it takes to put it in chronological order. */
 interface Candidate {
@@ -200,7 +216,12 @@ export async function fetchJarHistory(
   limit = 40,
 ): Promise<JarHistory> {
   const jarAddress = jar.toBase58();
-  const addresses = await jarAddresses(connection, jar);
+  const [addresses, firstAvailableBlock] = await Promise.all([
+    jarAddresses(connection, jar),
+    // A node that will not say how far back it goes cannot be shown to have answered in full, so a
+    // failure here reads as the floor being immediately underfoot rather than infinitely far away.
+    connection.getFirstAvailableBlock().catch(() => Number.POSITIVE_INFINITY),
+  ]);
 
   const candidates = new Map<string, Candidate>();
   const scans = addresses.map((address) => ({
@@ -322,7 +343,17 @@ export async function fetchJarHistory(
   }
 
   payments.sort((a, b) => (b.blockTime ?? 0) - (a.blockTime ?? 0));
-  return { payments, scanned, hitCap: stoppedAtCap, stoppedAtLimit: read < ordered.length };
+  // `ordered` is sorted newest first, so the last entry is the oldest signature the read reached.
+  // A jar with nothing in the window has no oldest signature and no claim to have seen anything.
+  const oldestSlot = ordered[ordered.length - 1]?.slot;
+  return {
+    payments,
+    scanned,
+    hitCap: stoppedAtCap,
+    stoppedAtLimit: read < ordered.length,
+    reachedRetentionFloor:
+      oldestSlot === undefined || oldestSlot - firstAvailableBlock <= RETENTION_FLOOR_MARGIN_SLOTS,
+  };
 }
 
 export interface JarTotal {
