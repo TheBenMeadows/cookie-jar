@@ -35,8 +35,11 @@ export const REF_LENGTH = 7;
 /** Label shown on the homepage demo payment request. */
 export const SHOWCASE_LABEL = "Cookie Tab";
 
-/** Note attached to the homepage payment request. */
-export const SHOWCASE_NOTE = "the homepage invoice, paid from whatever you hold";
+/**
+ * Written into the memo of every homepage payment, where it is public and permanent, so it says
+ * only what stays true whatever token the payer held.
+ */
+export const SHOWCASE_NOTE = "Cookie Tab homepage invoice";
 
 /** Crockford base32 without the letters that read like digits, so a reference survives being read aloud. */
 export const REF_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";

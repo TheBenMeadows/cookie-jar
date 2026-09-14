@@ -27,7 +27,7 @@ Get paid. The Pay page decodes the link, resolves the name against the CookOven 
 
 Read the jar. The Jar page lists what arrived, totalled by token, with a link to each transaction on Cookiescan.
 
-Pay from an agent. The link, the memo and the transaction are documented in [docs/wire-format.md](docs/wire-format.md), and the Pay page emits the request as one `transfer` call for an agent on [cookie-mcp](https://github.com/cookiechain/cookie-mcp), memo included. The released cookie-mcp does not take a memo yet. [PR #3](https://github.com/cookiechain/cookie-mcp/pull/3) adds the parameter and is open, unreviewed. Until that is adopted, an agent using the released server pays correctly but leaves the memo off, so its payment moves the money without appearing in a jar.
+Pay from an agent. The link, the memo and the transaction are documented in [docs/wire-format.md](docs/wire-format.md), and the Pay page emits the request as one `transfer` call for an agent on [cookie-mcp](https://github.com/cookiechain/cookie-mcp), memo included. That server's `transfer` takes the memo as of [PR #3](https://github.com/cookiechain/cookie-mcp/pull/3), merged 2026-09-14, so the wire format has an implementation outside this repository. The change is on `main` and not in a release: 0.4.0, the current published version, still drops the memo, and an agent running it pays correctly but leaves no row in a jar.
 
 Settle a reference. A request made with an invoice reference is answered by the same jar narrowed to that reference: `#/jar/<recipient>?ref=<reference>` says whether a payment carrying it has arrived, how much, and in which transaction. The payer gets that link on the paid screen as the receipt; the recipient can hand it to anyone who asks. Opening a referenced link a second time says the reference has already been paid, or part-paid, before the button is offered. Paying again is still allowed, as a choice.
 
@@ -35,7 +35,7 @@ What that page cannot do is prove a negative. A reference is text anyone can put
 
 ## How it works on chain
 
-Every payment is one Cookie Chain transaction:
+A payment is one Cookie Chain transaction, and so is a payment with a swap in front of it when the route fits:
 
 - native COOK: a `SystemProgram.transfer`
 - an SPL token: a `TransferChecked`, preceded by an idempotent create for the recipient's associated token account. The create rides along on every token payment. It costs nothing when the account is already there, and it names the recipient's wallet among the transaction's account keys, which is what lets their jar find the payment afterwards
@@ -86,8 +86,8 @@ The dev server prints a local URL. Open it, connect a wallet, and make a link.
 ```
 npm run build      # typecheck, then a static bundle in dist/
 npm run preview    # serve dist/ locally
-npm test           # 88 unit and render tests, no network
-npm run live       # 19 checks against the live chain, no key, no funds
+npm test           # 150 unit and render tests, no network
+npm run live       # 28 checks against the live chain, no key, no funds
 npm run lint
 ```
 
@@ -121,7 +121,9 @@ Any other static host works the same way. Upload `dist/`.
 
 ## The live checks
 
-`npm run live` runs 27 checks against Cookie Chain and the ecosystem APIs. They are read-and-simulate checks: nothing is signed and nothing is sent, so they run without a key and without funds, and they cannot prove that a payment lands — [the funded test](#the-funded-end-to-end-test) below does that. They cover the link round-trip, `.cook` resolution for a registered and an unregistered name and for the demo jar's own name, the dollar quote, the token registry, a COOK transfer, an SPL transfer, both aggregators quoted and built in both directions, a swap composed with a payment on each router, the Cookie Jar round-up, and the jar history read, including one known payment into the demo jar, read back from the chain with its amount and its reference for as long as the retention window holds it, and the homepage invoice: its token's decimals checked against the registry, and the last composed checkout landed under its reference read back as one signature, and a jar read's own report of whether it ran into the RPC's retention floor, checked against `getFirstAvailableBlock` and the oldest signature the node will return.
+`npm run live` runs 28 checks against Cookie Chain and the ecosystem APIs. They are read-and-simulate checks: nothing is signed and nothing is sent, so they run without a key and without funds, and they cannot prove that a payment lands — [the funded test](#the-funded-end-to-end-test) below does that. They cover the link round-trip, `.cook` resolution for a registered and an unregistered name and for the demo jar's own name, the dollar quote, the token registry, a COOK transfer, an SPL transfer, both aggregators quoted and built in both directions, a swap composed with a payment on each router, the Cookie Jar round-up, and the jar history read, including one known payment into the demo jar, read back from the chain with its amount and its reference for as long as the retention window holds it.
+
+The homepage invoice and the evidence under it are covered too: its token's decimals against the registry; the last composed checkout landed under its reference, read back as one signature; a jar read's own report of whether it ran into the retention floor, against `getFirstAvailableBlock` and the oldest signature the node will return; and the scheduled refresh job against the app's own constants, since a reference that stops being re-landed silently stops being readable.
 
 The transfer checks run twice over. Once as a real holder with signature verification off, which proves the transaction is valid end to end. Once as a freshly generated keypair, which must fail with `AccountNotFound` and nothing else. An address that has never held COOK has no account on chain, so that error is the whole of what is wrong, and it proves the rest of the transaction is well formed.
 
@@ -155,7 +157,7 @@ A jar row records what the chain recorded, and nothing more. Anyone can send a j
 
 The swap step seeds its input amount from the two Cookiescan prices plus 3% headroom, because both aggregators quote exact-in rather than exact-out. The quote below the field is what the router actually offers, and the payer can change the number and re-quote.
 
-`npm audit` reports advisories in the Solana dependency tree, none of them in this app's own code and none with a fix that keeps the SDK working. One reaches the shipped bundle: `bigint-buffer`, pulled in by `@solana/spl-token`, whose advisory concerns its native Node addon; browsers never load that addon and run the package's plain JavaScript path instead. The others (`jayson`, `stream-json`, `uuid` under `@solana/web3.js`, and the React Native packages under `@solana/wallet-adapter-react`'s mobile support) are Node-only or mobile-only and are not in the bundle the page serves. The build tooling itself (Vite, Vitest, esbuild) is kept at versions with no open advisory.
+`npm audit` reports advisories in the Solana dependency tree, all of them on Node-only or mobile-only paths that the browser bundle never loads. The one that reaches the bundle, `bigint-buffer` under `@solana/spl-token`, concerns a native Node addon; a browser runs the package's plain JavaScript instead and no patched version exists at any release.
 
 ## Licence
 

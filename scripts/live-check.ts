@@ -11,6 +11,9 @@
  *
  * Run: `npm run live`
  */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Keypair, PublicKey, SystemProgram, VersionedTransaction } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
@@ -40,6 +43,7 @@ import { coversAbsence, paymentsForRef, settlementOf } from "../src/lib/reconcil
 import { buildMemo, decodeRequest, encodeRequest, parseMemo, type PaymentRequest } from "../src/lib/request";
 import {
   SHOWCASE_DECIMALS,
+  SHOWCASE_JAR,
   SHOWCASE_LANDED_REF,
   SHOWCASE_MINT,
   SHOWCASE_NAME,
@@ -628,6 +632,34 @@ async function main(): Promise<void> {
     assert(detail?.hasMemo === true, "the landed checkout carries no memo");
     assert((detail?.instructions ?? 0) >= 3, `the landed checkout has only ${detail?.instructions} instructions`);
     return `${SHOWCASE_NAME}: ${request.amount} ${request.symbol} invoice encodes under ${request.ref}; ${SHOWCASE_LANDED_REF} last landed ${latest.signature.slice(0, 10)}… as ${detail?.instructions} instructions, ${detail?.signatures} signature, through ${detail?.programs.map((p) => p.slice(0, 6)).join(", ")}`;
+  });
+
+  await check("the refresh job and the homepage invoice still name the same jar and reference", async () => {
+    // The homepage proof, the README's demo link and the registry entry all rest on one reference
+    // staying inside the RPC's window, which only happens because a scheduled job keeps re-landing
+    // it. The job holds its own copy of the jar, the mint and the reference; a change to either
+    // side detaches the proof silently, and nothing else would notice.
+    const jobPath = path.join(os.homedir(), ".config/superteam/refresh-demo-jar.mjs");
+    if (!fs.existsSync(jobPath)) {
+      return `no refresh job at ${jobPath} on this machine, so there is nothing to drift from`;
+    }
+    const job = fs.readFileSync(jobPath, "utf8");
+    for (const [name, value] of [
+      ["the demo jar", DEMO_JAR],
+      ["the invoice mint", SHOWCASE_MINT],
+      ["the landed reference", SHOWCASE_LANDED_REF],
+    ] as const) {
+      assert(job.includes(value), `the refresh job does not mention ${name} (${value})`);
+    }
+    assert(SHOWCASE_JAR === DEMO_JAR, `showcase.ts names jar ${SHOWCASE_JAR}, this suite checks ${DEMO_JAR}`);
+
+    // Naming it is not keeping it alive. The reference has to still be readable from the chain.
+    const history = await fetchJarHistory(connection, new PublicKey(DEMO_JAR), 50);
+    const landed = paymentsForRef(history.payments, SHOWCASE_LANDED_REF);
+    if (landed.length === 0) {
+      return `job and app agree on ${DEMO_JAR} / ${SHOWCASE_LANDED_REF}, but no payment under it is inside this RPC's window: the homepage shows its no-record notice until the job runs again`;
+    }
+    return `job and app agree on ${DEMO_JAR} / ${SHOWCASE_MINT} / ${SHOWCASE_LANDED_REF}; ${landed.length} payment(s) under it still readable, newest ${landed[0]?.signature.slice(0, 10)}…`;
   });
 
   await check("a jar read reports whether it ran into this RPC's retention floor", async () => {
