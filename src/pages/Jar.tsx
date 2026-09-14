@@ -15,7 +15,12 @@ import { explorerAddressUrl, explorerTxUrl, COOK_MINT, COOK_SYMBOL } from "../li
 import { formatTimestamp, groupDigits, rawToUi, shortAddress } from "../lib/format";
 import { coversAbsence, paymentsForRef } from "../lib/reconcile";
 import { jarUrl, receiptUrl } from "../lib/request";
+import { fetchTxDetail, type TxDetail } from "../lib/txdetail";
 import { Qr } from "../components/Qr";
+import { TxShape } from "../components/TxShape";
+
+/** How many of a reference's payments have their transaction shape read. A receipt rarely has more than one. */
+const DETAILED_PAYMENTS = 5;
 
 interface ResolvedRecipient {
   address: PublicKey;
@@ -47,6 +52,8 @@ export function Jar({
   const [copied, setCopied] = useState(false);
   const [addressCopied, setAddressCopied] = useState(false);
   const [resolvedSymbols, setResolvedSymbols] = useState<Record<string, string>>({});
+  /** The shape of each matching payment's transaction, by signature. Null when the RPC no longer holds it. */
+  const [details, setDetails] = useState<Record<string, TxDetail | null>>({});
 
   const origin = useMemo(
     () => window.location.origin + window.location.pathname.replace(/index\.html$/, ""),
@@ -133,6 +140,30 @@ export function Jar({
       live = false;
     };
   }, [totals, payments, resolvedSymbols]);
+
+  // On a receipt, each matching payment's transaction is read once more, this time for its shape:
+  // a composed checkout shows as many instructions behind one signature, which the amount row alone
+  // cannot say. Signatures are deduplicated because a payment in two assets lists twice.
+  useEffect(() => {
+    if (!payments || !refFilter) return;
+    const signatures = [...new Set(paymentsForRef(payments, refFilter).map((p) => p.signature))].slice(
+      0,
+      DETAILED_PAYMENTS,
+    );
+    if (signatures.length === 0) return;
+    let live = true;
+    Promise.all(
+      signatures.map(async (signature) => {
+        const detail = await fetchTxDetail(connection, signature).catch(() => null);
+        return [signature, detail] as const;
+      }),
+    ).then((entries) => {
+      if (live) setDetails(Object.fromEntries(entries));
+    });
+    return () => {
+      live = false;
+    };
+  }, [connection, payments, refFilter]);
 
   const handleCopyAddress = useCallback(() => {
     if (!resolved) return;
@@ -244,6 +275,11 @@ export function Jar({
                         {groupDigits(rawToUi(p.rawAmount, p.decimals))} {getSymbol(p.mint, p.symbol)}
                       </div>
                       {p.from && <div>From: {shortAddress(p.from)}</div>}
+                      {details[p.signature] && (
+                        <div>
+                          <TxShape detail={details[p.signature] as TxDetail} />
+                        </div>
+                      )}
                       <div>
                         <a href={explorerTxUrl(p.signature)} className="mono">
                           {shortAddress(p.signature, 8, 6)}

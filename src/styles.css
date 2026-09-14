@@ -159,6 +159,33 @@ h2 {
   color: var(--ink-soft);
 }
 
+/* A section heading with the weight of a page title, for a form that sits under the homepage invoice. */
+h2.title {
+  margin: 1.5rem 0 0.25rem;
+  font-size: 1.25rem;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--ink);
+}
+
+/*
+ * The homepage invoice. It keeps the prose measure even on the wide Create layout below it, and its
+ * button is sized to the amount rather than stretched across the page.
+ */
+.hero {
+  max-width: 34rem;
+}
+
+.hero .primary {
+  width: auto;
+  min-width: 14rem;
+}
+
+.hero .buttons {
+  margin: 1rem 0 1.25rem;
+}
+
 p {
   margin: 0 0 1rem;
 }

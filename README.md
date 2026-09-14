@@ -6,12 +6,12 @@ Fill in a form and you get a short link and a QR code, priced in a token or in d
 
 Cookie Tab has no application backend, holds no keys and takes no fee. The payment request travels inside the link, and the history is read back out of the chain. It does depend on things it does not run: the public RPC, the two routers, and the Cookiescan price feed.
 
-Try it against the demo jar, which owns the CookOven name `cookietab.cook`:
+Try it. The homepage at https://cookie-tab.pages.dev leads with a live invoice on the demo jar, which owns the CookOven name `cookietab.cook`: 700 TRASHCOIN, about half a dollar. A wallet holding only COOK is short of that token, so paying it is the one-transaction path, a swap through whichever router quotes better, the transfer and the memo behind one signature. Each press of the button mints its own reference, so the receipt it lands on is yours. Under the button the page shows the last payment that landed there, read from the chain: how many instructions, how many signatures, which venue the swap went through.
 
 - the jar: https://cookie-tab.pages.dev/#/jar/cookietab.cook
 - one invoice's receipt, a swap and a payment that landed in a single transaction: https://cookie-tab.pages.dev/#/jar/cookietab.cook?ref=LANDING-COMPOSED
 
-Both resolve the name against the registry on every open, and read the payments from the chain.
+Both resolve the name against the registry on every open, and read the payments from the chain. A receipt also reads each matching transaction's shape back, so a composed checkout shows as its instruction count behind one signature rather than as a claim.
 
 ![Making a link, opening it as the payer, and reading the jar back](docs/demo.gif)
 
@@ -121,7 +121,7 @@ Any other static host works the same way. Upload `dist/`.
 
 ## The live checks
 
-`npm run live` runs 25 checks against Cookie Chain and the ecosystem APIs. They are read-and-simulate checks: nothing is signed and nothing is sent, so they run without a key and without funds, and they cannot prove that a payment lands — [the funded test](#the-funded-end-to-end-test) below does that. They cover the link round-trip, `.cook` resolution for a registered and an unregistered name and for the demo jar's own name, the dollar quote, the token registry, a COOK transfer, an SPL transfer, both aggregators quoted and built in both directions, a swap composed with a payment on each router, the Cookie Jar round-up, and the jar history read, including one known payment into the demo jar, read back from the chain with its amount and its reference for as long as the retention window holds it.
+`npm run live` runs 26 checks against Cookie Chain and the ecosystem APIs. They are read-and-simulate checks: nothing is signed and nothing is sent, so they run without a key and without funds, and they cannot prove that a payment lands — [the funded test](#the-funded-end-to-end-test) below does that. They cover the link round-trip, `.cook` resolution for a registered and an unregistered name and for the demo jar's own name, the dollar quote, the token registry, a COOK transfer, an SPL transfer, both aggregators quoted and built in both directions, a swap composed with a payment on each router, the Cookie Jar round-up, and the jar history read, including one known payment into the demo jar, read back from the chain with its amount and its reference for as long as the retention window holds it, and the homepage invoice: its token's decimals checked against the registry, and the last composed checkout landed under its reference read back as one signature.
 
 The transfer checks run twice over. Once as a real holder with signature verification off, which proves the transaction is valid end to end. Once as a freshly generated keypair, which must fail with `AccountNotFound` and nothing else. An address that has never held COOK has no account on chain, so that error is the whole of what is wrong, and it proves the rest of the transaction is well formed.
 
