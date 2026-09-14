@@ -14,8 +14,11 @@ type PricingMode = "fixed" | "usd" | "open";
 /**
  * Form component to generate payment links and QR codes.
  * Supports token payments, USD equivalent pricing, or open tip jar requests.
+ *
+ * `nested` is set when the form sits under the homepage invoice, where the page already has its
+ * heading and this one is a section of it.
  */
-export function Create(): JSX.Element {
+export function Create({ nested = false }: { nested?: boolean } = {}): JSX.Element {
   const { publicKey, connected } = useWallet();
   const connection = useMemo(() => getConnection(), []);
 
@@ -200,7 +203,7 @@ export function Create(): JSX.Element {
 
   return (
     <>
-      <h1>Make a payment link</h1>
+      {nested ? <h2 className="title">Make a payment link</h2> : <h1>Make a payment link</h1>}
       <p className="lede">
         Whoever opens the link pays you on Cookie Chain. Nothing is stored on a server: the request
         is carried inside the link itself.

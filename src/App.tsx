@@ -5,7 +5,7 @@ import { WalletBar } from "./components/WalletBar";
 import { useConnectOnSelect } from "./components/WalletPicker";
 import { EXPLORER_URL, REPO_URL, RPC_URL, WS_URL } from "./lib/config";
 import { About } from "./pages/About";
-import { Create } from "./pages/Create";
+import { Home } from "./pages/Home";
 import { Jar } from "./pages/Jar";
 import { Pay } from "./pages/Pay";
 import { useRoute, type Route } from "./router";
@@ -20,7 +20,7 @@ function Body(): JSX.Element {
     case "about":
       return <About />;
     default:
-      return <Create />;
+      return <Home />;
   }
 }
 
@@ -60,7 +60,7 @@ function Shell({ route }: { route: Route }): JSX.Element {
           {!onPayPage && (
             <nav className="nav">
               <a href="#/" aria-current={route.name === "create" ? "page" : undefined}>
-                Create
+                Pay or create
               </a>
               <a href="#/about" aria-current={route.name === "about" ? "page" : undefined}>
                 How it works

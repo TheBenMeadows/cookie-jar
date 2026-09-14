@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import "./polyfill";
 import { App } from "./App";
-import { encodeRequest } from "./lib/request";
+import { decodeRequest, encodeRequest } from "./lib/request";
 
 /**
  * Render checks. They catch what a build cannot: a module that only breaks once it runs in a
@@ -28,10 +28,26 @@ function renderAt(hash: string): void {
 }
 
 describe("the app renders", () => {
-  it("opens on the create page", async () => {
+  it("opens on the live invoice, with the link builder under it", async () => {
     renderAt("#/");
-    expect(await screen.findByText("Make a payment link")).toBeDefined();
+    expect(await screen.findByText("Pay this invoice from whatever you hold")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Pay this invoice" })).toBeDefined();
+    // The form keeps its heading, one level down: the page's own heading is the invoice.
+    expect(screen.getByRole("heading", { level: 2, name: "Make a payment link" })).toBeDefined();
     expect(screen.getByPlaceholderText("baker.cook or a Cookie Chain address")).toBeDefined();
+    // The stubbed RPC never answers usefully; the proof line under the button waits on it rather
+    // than throwing, which is the behaviour a slow node gets too.
+    expect(screen.getByText(/Reading the last payment/)).toBeDefined();
+  });
+
+  it("pressing Pay opens a payment link for the showcase invoice with a fresh reference", async () => {
+    renderAt("#/");
+    (await screen.findByRole("button", { name: "Pay this invoice" })).click();
+    expect(window.location.hash.startsWith("#/pay/")).toBe(true);
+    const request = decodeRequest(window.location.hash.slice("#/pay/".length));
+    expect(request.to).toBe("cookietab.cook");
+    expect(request.amount).toBe("700");
+    expect(request.ref).toMatch(/^TAB-[0-9A-HJKMNP-TV-Z]{6}$/);
   });
 
   it("shows the reference page", async () => {

@@ -36,8 +36,17 @@ import {
 } from "../src/lib/checkout";
 import { buildPayment, roundUpAmount, simulatePayment } from "../src/lib/pay";
 import { usdToRaw } from "../src/lib/quote";
-import { coversAbsence, settlementOf } from "../src/lib/reconcile";
+import { coversAbsence, paymentsForRef, settlementOf } from "../src/lib/reconcile";
 import { buildMemo, decodeRequest, encodeRequest, parseMemo, type PaymentRequest } from "../src/lib/request";
+import {
+  SHOWCASE_DECIMALS,
+  SHOWCASE_LANDED_REF,
+  SHOWCASE_MINT,
+  SHOWCASE_NAME,
+  freshRef,
+  showcaseRequest,
+} from "../src/lib/showcase";
+import { fetchTxDetail } from "../src/lib/txdetail";
 import {
   bestSwapQuote,
   buildSwapTransaction,
@@ -588,6 +597,36 @@ async function main(): Promise<void> {
     const blind = settlementOf(history.payments, "INV-NEVER-PAID", COOK_MINT, 1n, null);
     assert(blind.state === "unknown", `without coverage an absence read as ${blind.state}`);
     return `${DEMO_PAYMENT.ref}: paid, ${groupDigits(rawToUi(paid.paidRaw, COOK_DECIMALS))} ${COOK_SYMBOL} across ${paid.payments.length} payment(s); partial when asked for double; INV-NEVER-PAID ${none.state} (scanned ${coverage.scanned}, cap ${coverage.hitCap}, limit ${coverage.stoppedAtLimit})`;
+  });
+
+  await check("the homepage invoice is payable and its last landing reads back as one signature", async () => {
+    // The homepage leads with a fixed invoice on the demo jar. Its token facts are hard-coded so
+    // the page paints before any RPC call, which means the registry is the thing to check them
+    // against: a decimals mismatch would price the invoice a thousand times off.
+    const token = await fetchToken(SHOWCASE_MINT);
+    assert(token !== null, `the registry has no entry for ${SHOWCASE_MINT}`);
+    assert(
+      token?.decimals === SHOWCASE_DECIMALS,
+      `the registry says ${SHOWCASE_MINT} has ${token?.decimals} decimals, the homepage assumes ${SHOWCASE_DECIMALS}`,
+    );
+    const request = decodeRequest(encodeRequest(showcaseRequest(freshRef())));
+    assert(request.to === SHOWCASE_NAME, `the invoice names ${request.to}`);
+    assert(request.ref?.startsWith("TAB-") === true, `the invoice reference came back as ${request.ref}`);
+
+    // Under the button the page shows the last payment landed under the refresh job's reference,
+    // with the transaction's shape read from the chain. That is only possible while the node still
+    // holds it, and the page says so when it does not.
+    const history = await fetchJarHistory(connection, new PublicKey(DEMO_JAR), 10);
+    const [latest] = paymentsForRef(history.payments, SHOWCASE_LANDED_REF);
+    if (!latest) {
+      return `${SHOWCASE_NAME}: ${request.amount} ${request.symbol} invoice encodes under ${request.ref}; no ${SHOWCASE_LANDED_REF} payment inside this RPC's window, so the homepage shows the no-record notice`;
+    }
+    const detail = await fetchTxDetail(connection, latest.signature);
+    assert(detail !== null, `the node lists ${latest.signature} but will not return it`);
+    assert(detail?.signatures === 1, `the landed checkout carried ${detail?.signatures} signatures`);
+    assert(detail?.hasMemo === true, "the landed checkout carries no memo at the top level");
+    assert((detail?.instructions ?? 0) >= 3, `the landed checkout has only ${detail?.instructions} instructions`);
+    return `${SHOWCASE_NAME}: ${request.amount} ${request.symbol} invoice encodes under ${request.ref}; ${SHOWCASE_LANDED_REF} last landed ${latest.signature.slice(0, 10)}… as ${detail?.instructions} instructions, ${detail?.signatures} signature, ${detail?.venues.length} venue(s) ${detail?.venues.map((v) => v.slice(0, 6)).join(", ")}`;
   });
 
   await check("how far back a jar can see on this RPC", async () => {
