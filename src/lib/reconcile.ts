@@ -22,7 +22,29 @@ export function paymentsForRef(payments: JarPayment[], ref: string): JarPayment[
   return payments.filter((p) => p.ref !== null && normalizeRef(p.ref) === wanted);
 }
 
-export type SettlementState = "unpaid" | "partial" | "paid";
+/**
+ * `unknown` is the honest answer when nothing carrying the reference was found AND the jar's own
+ * history could not be read to its end: a public Cookie Chain node keeps roughly ten days, so a
+ * reference settled before that window reads exactly like one never paid. Calling that `unpaid`
+ * would invite a second payment for an invoice already settled.
+ */
+export type SettlementState = "unknown" | "unpaid" | "partial" | "paid";
+
+/** What the jar read could see, which decides whether an absence means anything. */
+export interface HistoryCoverage {
+  /** Signatures actually read across the jar's addresses. Zero means the RPC held nothing. */
+  scanned: number;
+  /** True when the scan stopped at its cap with an address still unread. */
+  hitCap: boolean;
+  /** True when the scan stopped at the payment limit with candidates left unfetched. */
+  stoppedAtLimit: boolean;
+}
+
+/** True when an absence of matching payments is evidence, rather than the edge of what was read. */
+export function coversAbsence(coverage: HistoryCoverage | null): boolean {
+  if (!coverage) return false;
+  return coverage.scanned > 0 && !coverage.hitCap && !coverage.stoppedAtLimit;
+}
 
 export interface Settlement {
   state: SettlementState;
@@ -40,20 +62,27 @@ export interface Settlement {
  * Whether a request for `requestedRaw` of `mint` has been paid, judged from the jar's payments.
  * Only payments in the requested token count toward the amount; a payment carrying the reference in
  * another token is listed but not summed, because there is no price here to compare it at.
+ *
+ * `coverage` says how much of the jar's history the read actually saw. Without it, or with a read
+ * that stopped early, nothing found means nothing *readable* — `unknown`, not `unpaid`.
  */
 export function settlementOf(
   payments: JarPayment[],
   ref: string,
   mint: string,
   requestedRaw: bigint,
+  coverage: HistoryCoverage | null = null,
 ): Settlement {
   const matching = paymentsForRef(payments, ref);
   const paidRaw = matching
     .filter((p) => p.mint === mint)
     .reduce((sum, p) => sum + p.rawAmount, 0n);
   // An open request names no amount, so anything that arrived under its reference settles it.
-  let state: SettlementState = "unpaid";
+  let state: SettlementState;
   if (paidRaw > 0n && paidRaw >= requestedRaw) state = "paid";
   else if (paidRaw > 0n) state = "partial";
+  // Rows carrying the reference in another token leave the requested amount genuinely at zero, so
+  // they read as unpaid in that token — but only when the read saw enough to say so.
+  else state = coversAbsence(coverage) ? "unpaid" : "unknown";
   return { state, payments: matching, paidRaw, requestedRaw, totals: totalsByToken(matching) };
 }

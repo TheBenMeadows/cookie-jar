@@ -36,7 +36,7 @@ import {
 } from "../src/lib/checkout";
 import { buildPayment, roundUpAmount, simulatePayment } from "../src/lib/pay";
 import { usdToRaw } from "../src/lib/quote";
-import { settlementOf } from "../src/lib/reconcile";
+import { coversAbsence, settlementOf } from "../src/lib/reconcile";
 import { buildMemo, decodeRequest, encodeRequest, parseMemo, type PaymentRequest } from "../src/lib/request";
 import {
   bestSwapQuote,
@@ -556,21 +556,38 @@ async function main(): Promise<void> {
     // The receipt page and the already-paid notice both rest on this: the jar's payments, filtered
     // by the reference the memo carries, judged against the amount the request asked for.
     const history = await fetchJarHistory(connection, new PublicKey(DEMO_JAR), 50);
+    const coverage = {
+      scanned: history.scanned,
+      hitCap: history.hitCap,
+      stoppedAtLimit: history.stoppedAtLimit,
+    };
     const status = await connection.getSignatureStatuses([DEMO_PAYMENT.signature], {
       searchTransactionHistory: true,
     });
     if (status.value[0] === null) {
-      const gone = settlementOf(history.payments, DEMO_PAYMENT.ref, COOK_MINT, DEMO_PAYMENT.rawAmount);
+      const gone = settlementOf(history.payments, DEMO_PAYMENT.ref, COOK_MINT, DEMO_PAYMENT.rawAmount, coverage);
+      assert(gone.state !== "paid", `${DEMO_PAYMENT.ref} reads paid with its payment outside the window`);
       return `the demo payment is outside this RPC's retention window; ${DEMO_PAYMENT.ref} reads as ${gone.state}, which is the documented limit`;
     }
-    const paid = settlementOf(history.payments, DEMO_PAYMENT.ref, COOK_MINT, DEMO_PAYMENT.rawAmount);
+    const paid = settlementOf(history.payments, DEMO_PAYMENT.ref, COOK_MINT, DEMO_PAYMENT.rawAmount, coverage);
     assert(paid.state === "paid", `${DEMO_PAYMENT.ref} reads as ${paid.state} with ${paid.paidRaw} base units`);
     assert(paid.payments.length >= 1, `${DEMO_PAYMENT.ref} matched no payment`);
-    const partial = settlementOf(history.payments, DEMO_PAYMENT.ref, COOK_MINT, DEMO_PAYMENT.rawAmount * 2n);
+    const partial = settlementOf(history.payments, DEMO_PAYMENT.ref, COOK_MINT, DEMO_PAYMENT.rawAmount * 2n, coverage);
     assert(partial.state === "partial", `asked for double, ${DEMO_PAYMENT.ref} reads as ${partial.state}`);
-    const none = settlementOf(history.payments, "INV-NEVER-PAID", COOK_MINT, 1n);
-    assert(none.state === "unpaid" && none.payments.length === 0, "an unknown reference matched something");
-    return `${DEMO_PAYMENT.ref}: paid, ${groupDigits(rawToUi(paid.paidRaw, COOK_DECIMALS))} ${COOK_SYMBOL} across ${paid.payments.length} payment(s); partial when asked for double; INV-NEVER-PAID unpaid`;
+
+    // A reference nobody has paid reads `unpaid` only when the jar was read to its end; on a
+    // truncated read the honest answer is `unknown`, and the receipt page says so rather than
+    // calling a settled invoice unpaid.
+    const none = settlementOf(history.payments, "INV-NEVER-PAID", COOK_MINT, 1n, coverage);
+    assert(none.payments.length === 0, "an unknown reference matched a payment");
+    const readToEnd = coversAbsence(coverage);
+    assert(
+      none.state === (readToEnd ? "unpaid" : "unknown"),
+      `with coverage ${JSON.stringify(coverage)} an unpaid reference read as ${none.state}`,
+    );
+    const blind = settlementOf(history.payments, "INV-NEVER-PAID", COOK_MINT, 1n, null);
+    assert(blind.state === "unknown", `without coverage an absence read as ${blind.state}`);
+    return `${DEMO_PAYMENT.ref}: paid, ${groupDigits(rawToUi(paid.paidRaw, COOK_DECIMALS))} ${COOK_SYMBOL} across ${paid.payments.length} payment(s); partial when asked for double; INV-NEVER-PAID ${none.state} (scanned ${coverage.scanned}, cap ${coverage.hitCap}, limit ${coverage.stoppedAtLimit})`;
   });
 
   await check("how far back a jar can see on this RPC", async () => {
