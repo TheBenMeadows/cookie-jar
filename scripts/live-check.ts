@@ -27,7 +27,7 @@ import {
 } from "../src/lib/config";
 import { fetchDomain, resolveRecipient } from "../src/lib/domains";
 import { groupDigits, rawToUi, uiToRaw } from "../src/lib/format";
-import { fetchJarHistory } from "../src/lib/history";
+import { fetchJarHistory, RETENTION_FLOOR_MARGIN_SLOTS } from "../src/lib/history";
 import {
   MAX_TRANSACTION_BYTES,
   composeSwapAndPayment,
@@ -569,6 +569,7 @@ async function main(): Promise<void> {
       scanned: history.scanned,
       hitCap: history.hitCap,
       stoppedAtLimit: history.stoppedAtLimit,
+      reachedRetentionFloor: history.reachedRetentionFloor,
     };
     const status = await connection.getSignatureStatuses([DEMO_PAYMENT.signature], {
       searchTransactionHistory: true,
@@ -627,6 +628,38 @@ async function main(): Promise<void> {
     assert(detail?.hasMemo === true, "the landed checkout carries no memo");
     assert((detail?.instructions ?? 0) >= 3, `the landed checkout has only ${detail?.instructions} instructions`);
     return `${SHOWCASE_NAME}: ${request.amount} ${request.symbol} invoice encodes under ${request.ref}; ${SHOWCASE_LANDED_REF} last landed ${latest.signature.slice(0, 10)}… as ${detail?.instructions} instructions, ${detail?.signatures} signature, through ${detail?.programs.map((p) => p.slice(0, 6)).join(", ")}`;
+  });
+
+  await check("a jar read reports whether it ran into this RPC's retention floor", async () => {
+    // The distinction the receipt page rests on: consuming every signature a node will return is
+    // not the same as seeing a jar's whole life. A jar older than the window ends its history at
+    // the node's earliest block, and an invoice settled before that must read as no record rather
+    // than as unpaid.
+    const [history, firstBlock] = await Promise.all([
+      fetchJarHistory(connection, new PublicKey(DEMO_JAR), 50),
+      connection.getFirstAvailableBlock(),
+    ]);
+    assert(
+      typeof history.reachedRetentionFloor === "boolean",
+      "a jar read did not report whether it reached the retention floor",
+    );
+    const signatures = await connection.getSignaturesForAddress(new PublicKey(DEMO_JAR), {
+      limit: 1000,
+    });
+    const oldest = signatures[signatures.length - 1];
+    if (!oldest) {
+      assert(
+        history.reachedRetentionFloor,
+        "a jar the node holds nothing for claimed to have read past the floor",
+      );
+      return `${DEMO_JAR}: no signatures inside the window, so absence is not evidence and the page says no record`;
+    }
+    const above = oldest.slot - firstBlock;
+    assert(
+      history.reachedRetentionFloor === above <= RETENTION_FLOOR_MARGIN_SLOTS,
+      `oldest signature sits ${above} slots above block ${firstBlock} but the read reported reachedRetentionFloor=${history.reachedRetentionFloor}`,
+    );
+    return `${DEMO_JAR}: oldest of ${signatures.length} signatures at slot ${oldest.slot}, ${above} slots above the floor ${firstBlock}; margin ${RETENTION_FLOOR_MARGIN_SLOTS}, so reachedRetentionFloor=${history.reachedRetentionFloor} and an absence ${coversAbsence(history) ? "is" : "is not"} evidence`;
   });
 
   await check("how far back a jar can see on this RPC", async () => {

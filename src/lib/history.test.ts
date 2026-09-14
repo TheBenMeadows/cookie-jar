@@ -3,7 +3,13 @@ import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { describe, expect, it, vi } from "vitest";
 
 import { COOK_MINT, MEMO_PROGRAM_ID } from "./config";
-import { fetchJarHistory, MAX_TOKEN_ACCOUNTS, SCAN_CAP } from "./history";
+import {
+  fetchJarHistory,
+  MAX_TOKEN_ACCOUNTS,
+  RETENTION_FLOOR_MARGIN_SLOTS,
+  SCAN_CAP,
+} from "./history";
+import { coversAbsence } from "./reconcile";
 
 /**
  * What a jar can read back about itself. Every connection here is a stub shaped like the RPC's own
@@ -87,8 +93,11 @@ function connectionFor(opts: {
   signatures: Record<string, SignatureEntry[]>;
   transactions: Record<string, unknown>;
   tokenAccounts?: PublicKey[];
+  /** The node's earliest retained block. Far below every fixture slot, so these reads never sit at the floor. */
+  firstAvailableBlock?: number;
 }) {
   return {
+    getFirstAvailableBlock: vi.fn(async () => opts.firstAvailableBlock ?? 0),
     getTokenAccountsByOwner: vi.fn(async (_owner: PublicKey, filter: { programId: PublicKey }) => ({
       value: filter.programId.equals(TOKEN_PROGRAM_ID)
         ? (opts.tokenAccounts ?? []).map((pubkey) => ({
@@ -512,6 +521,66 @@ describe("transactions with multiple memo instructions", () => {
   });
 });
 
+describe("how far back the node itself goes", () => {
+  /**
+   * Reading every signature a node will return is not the same as reading a jar's whole life. The
+   * oldest signature's distance above the node's earliest retained block is what tells the two
+   * apart, and only the second one makes an absence mean anything.
+   */
+  function historyEndingAt(oldestSlot: number, firstAvailableBlock: number) {
+    const signatures = [
+      { signature: "new", err: null, memo: null, blockTime: 2, slot: oldestSlot + 10 },
+      { signature: "old", err: null, memo: null, blockTime: 1, slot: oldestSlot },
+    ];
+    return fetchJarHistory(
+      connectionFor({
+        signatures: { [JAR.toBase58()]: signatures },
+        transactions: {},
+        firstAvailableBlock,
+      }) as never,
+      JAR,
+      40,
+    );
+  }
+
+  it("reports the floor when the oldest signature sits within the margin of the earliest block", async () => {
+    const history = await historyEndingAt(1_000_000, 1_000_000 - RETENTION_FLOOR_MARGIN_SLOTS + 1);
+    expect(history.reachedRetentionFloor).toBe(true);
+    expect(coversAbsence(history)).toBe(false);
+  });
+
+  it("does not report the floor when the jar's own history ends well above it", async () => {
+    const history = await historyEndingAt(1_000_000, 1_000_000 - RETENTION_FLOOR_MARGIN_SLOTS - 1);
+    expect(history.reachedRetentionFloor).toBe(false);
+    expect(coversAbsence(history)).toBe(true);
+  });
+
+  it("reports the floor when the node holds no signatures for the jar at all", async () => {
+    const history = await fetchJarHistory(
+      connectionFor({ signatures: {}, transactions: {} }) as never,
+      JAR,
+      40,
+    );
+    expect(history.reachedRetentionFloor).toBe(true);
+    expect(coversAbsence(history)).toBe(false);
+  });
+
+  it("reports the floor when the node will not say how far back it goes", async () => {
+    const connection = {
+      getFirstAvailableBlock: vi.fn(async () => {
+        throw new Error("method not supported");
+      }),
+      getTokenAccountsByOwner: vi.fn(async () => ({ value: [] })),
+      getSignaturesForAddress: vi.fn(async () => [
+        { signature: "a", err: null, memo: null, blockTime: 1, slot: 9_000_000 },
+      ]),
+      getParsedTransactions: vi.fn(async () => [null]),
+    };
+    const history = await fetchJarHistory(connection as never, JAR, 40);
+    expect(history.reachedRetentionFloor).toBe(true);
+  });
+});
+
 describe("concurrency of signature queries across many accounts", () => {
   it("caps parallel getSignaturesForAddress calls to PARALLEL_PAGES", async () => {
     const accounts = Array.from({ length: 12 }, () => Keypair.generate().publicKey);
@@ -520,6 +589,7 @@ describe("concurrency of signature queries across many accounts", () => {
     const queried = new Set<string>();
 
     const connection = {
+      getFirstAvailableBlock: vi.fn(async () => 0),
       getTokenAccountsByOwner: vi.fn(async (_owner: PublicKey, filter: { programId: PublicKey }) => ({
         value: filter.programId.equals(TOKEN_PROGRAM_ID)
           ? accounts.map((pubkey) => ({
