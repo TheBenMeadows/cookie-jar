@@ -15,9 +15,14 @@ const OTHER = "Ey35mr69UfiQqZSwD2qYAZoMNfnuVJGCjwNSB64ppHm7";
 /** A fake carrying only what the summary reads: program ids at the top level and in each inner group. */
 function fakeTx(
   programIds: string[],
-  opts?: { signatures?: number; inner?: string[][] },
+  opts?: { signatures?: number; inner?: string[][]; parsed?: (readonly [string, string] | null)[] },
 ): ParsedTransactionWithMeta {
-  const instructions = programIds.map((id) => ({ programId: new PublicKey(id) }));
+  const instructions = programIds.map((id, i) => {
+    const parse = opts?.parsed?.[i];
+    if (!parse) return { programId: new PublicKey(id) };
+    const [program, type] = parse;
+    return { programId: new PublicKey(id), program, parsed: { type, info: {} } };
+  });
   const innerInstructions = (opts?.inner ?? []).map((ids, index) => ({
     index,
     instructions: ids.map((id) => ({ programId: new PublicKey(id) })),
@@ -74,6 +79,45 @@ describe("summarizeTransaction", () => {
   it("lists each program once, in order of first appearance", () => {
     const detail = summarizeTransaction(fakeTx([CPAMM, OTHER, CPAMM]));
     expect(detail.programs).toEqual([CPAMM, OTHER]);
+  });
+});
+
+describe("steps", () => {
+  it("numbers the top-level instructions from one and keeps their order", () => {
+    const { steps } = summarizeTransaction(fakeTx([COMPUTE_BUDGET, CPAMM, MEMO]));
+    expect(steps.map((s) => s.position)).toEqual([1, 2, 3]);
+    expect(steps.map((s) => s.programId)).toEqual([COMPUTE_BUDGET, CPAMM, MEMO]);
+  });
+
+  it("describes the instructions a payment is built from", () => {
+    const { steps } = summarizeTransaction(
+      fakeTx([TOKEN, MEMO], {
+        parsed: [["spl-token", "transferChecked"], ["spl-memo", ""]],
+      }),
+    );
+    expect(steps[0]?.parsed).toBe("spl-token transferChecked");
+    expect(steps[0]?.sentence).toContain("Pays the recipient");
+    expect(steps[1]?.sentence).toContain("invoice reference");
+  });
+
+  it("names the compute budget, which the parser leaves alone", () => {
+    const { steps } = summarizeTransaction(fakeTx([COMPUTE_BUDGET]));
+    expect(steps[0]?.parsed).toBeNull();
+    expect(steps[0]?.sentence).toContain("computation");
+  });
+
+  it("offers no sentence for a program it does not know, and still names the id", () => {
+    // The swap program on a composed checkout. A description here would be this app guessing.
+    const { steps } = summarizeTransaction(fakeTx([CPAMM]));
+    expect(steps[0]?.parsed).toBeNull();
+    expect(steps[0]?.sentence).toBeNull();
+    expect(steps[0]?.programId).toBe(CPAMM);
+  });
+
+  it("offers no sentence for a parsed instruction outside the payment path", () => {
+    const { steps } = summarizeTransaction(fakeTx([TOKEN], { parsed: [["spl-token", "burn"]] }));
+    expect(steps[0]?.parsed).toBe("spl-token burn");
+    expect(steps[0]?.sentence).toBeNull();
   });
 });
 

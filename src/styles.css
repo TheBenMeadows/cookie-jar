@@ -458,6 +458,43 @@ a.primary {
   font-size: 0.8125rem;
 }
 
+/* The replay's explorer link wears the same control as the buttons beside it. */
+a.quiet {
+  display: inline-block;
+  text-decoration: none;
+}
+
+/*
+ * The transaction replay. Numbered rows in the same ledger shape as a jar's payments, so an
+ * instruction reads like every other row of chain data on the site.
+ */
+.replay {
+  margin: 1rem 0 0;
+}
+
+.replay ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.replay .row {
+  align-items: baseline;
+}
+
+/*
+ * Base58 is case-sensitive, and the ledger key column uppercases. A program id is printed so a
+ * reader can match it against the explorer, which they cannot do if its case has been changed.
+ */
+.replay .k .mono {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.replay .buttons {
+  margin-top: 0.75rem;
+}
+
 /* A button that is a word in a sentence, not a control on its own. */
 button.link {
   border: 0;

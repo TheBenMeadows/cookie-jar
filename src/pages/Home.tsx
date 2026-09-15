@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { Replay } from "../components/Replay";
 import { TxShape } from "../components/TxShape";
 import { getConnection } from "../lib/chain";
 import { explorerTxUrl } from "../lib/config";
@@ -157,21 +158,25 @@ function ProofLine({ proof, origin }: { proof: Proof; origin: string }): JSX.Ele
     case "landed": {
       const { payment, detail } = proof.landed;
       return (
-        <p className="small">
-          Last landed {formatTimestamp(payment.blockTime)}
-          {detail ? (
-            <>
-              : <TxShape detail={detail} />
-            </>
-          ) : (
-            "; the transaction itself could not be read back from this RPC just now"
-          )}
-          . <a href={receipt}>See that receipt</a> or{" "}
-          <a href={explorerTxUrl(payment.signature)} className="mono">
-            {shortAddress(payment.signature, 8, 6)}
-          </a>{" "}
-          on the explorer.
-        </p>
+        <>
+          <p className="small">
+            Last landed {formatTimestamp(payment.blockTime)}
+            {detail ? (
+              <>
+                : <TxShape detail={detail} />
+              </>
+            ) : (
+              "; the transaction itself could not be read back from this RPC just now"
+            )}
+            . <a href={receipt}>See that receipt</a> or{" "}
+            <a href={explorerTxUrl(payment.signature)} className="mono">
+              {shortAddress(payment.signature, 8, 6)}
+            </a>{" "}
+            on the explorer.
+          </p>
+          {/* Paying needs a funded wallet. This is the same transaction without one. */}
+          {detail && <Replay detail={detail} signature={payment.signature} />}
+        </>
       );
     }
   }
