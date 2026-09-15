@@ -46,6 +46,9 @@ export function Replay({ detail, signature }: { detail: TxDetail; signature: str
             <div className="v">
               {step.parsed && <div className="mono">{step.parsed}</div>}
               {step.sentence && <div>{step.sentence}</div>}
+              {!step.parsed && !step.sentence && (
+                <div>This RPC does not decode this program, so only its id is shown.</div>
+              )}
             </div>
           </li>
         ))}

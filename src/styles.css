@@ -482,6 +482,15 @@ a.quiet {
   align-items: baseline;
 }
 
+/*
+ * Base58 is case-sensitive, and the ledger key column uppercases. A program id is printed so a
+ * reader can match it against the explorer, which they cannot do if its case has been changed.
+ */
+.replay .k .mono {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 .replay .buttons {
   margin-top: 0.75rem;
 }
